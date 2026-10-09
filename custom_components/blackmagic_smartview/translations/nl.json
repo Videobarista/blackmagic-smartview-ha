@@ -1,0 +1,160 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "title": "Blackmagic SmartView / SmartScope",
+        "description": "Vul het IP-adres van de monitor in. Gebruik een vast IP-adres (of een DHCP-reservering).",
+        "data": {
+          "host": "Host",
+          "port": "Poort"
+        },
+        "data_description": {
+          "host": "IP-adres of hostnaam van de SmartView of SmartScope.",
+          "port": "TCP-poort van het SmartView Ethernet Protocol (standaard 9992)."
+        }
+      },
+      "zeroconf_confirm": {
+        "title": "SmartView gevonden",
+        "description": "{model} \"{name}\" op {host} toevoegen?"
+      },
+      "reconfigure": {
+        "title": "Opnieuw configureren",
+        "description": "Wijzig het IP-adres of de poort van de monitor.",
+        "data": {
+          "host": "Host",
+          "port": "Poort"
+        },
+        "data_description": {
+          "host": "IP-adres of hostnaam van de SmartView of SmartScope.",
+          "port": "TCP-poort van het SmartView Ethernet Protocol (standaard 9992)."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Kan geen verbinding maken met de monitor. Controleer het IP-adres en of poort 9992 bereikbaar is.",
+      "already_configured": "Deze monitor is al geconfigureerd."
+    },
+    "abort": {
+      "already_configured": "Deze monitor is al geconfigureerd.",
+      "cannot_connect": "Kan geen verbinding maken met de monitor. Controleer het IP-adres en of poort 9992 bereikbaar is.",
+      "reconfigure_successful": "De monitor is opnieuw geconfigureerd."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "connection": {
+        "name": "Verbinding"
+      },
+      "dhcp": {
+        "name": "DHCP"
+      },
+      "inverted": {
+        "name": "Omgekeerd gemonteerd"
+      }
+    },
+    "button": {
+      "identify": {
+        "name": "Monitor {monitor} identificeren"
+      }
+    },
+    "number": {
+      "brightness": {
+        "name": "Monitor {monitor} helderheid"
+      },
+      "contrast": {
+        "name": "Monitor {monitor} contrast"
+      },
+      "saturation": {
+        "name": "Monitor {monitor} verzadiging"
+      }
+    },
+    "select": {
+      "scope_mode": {
+        "name": "Monitor {monitor} scoop",
+        "state": {
+          "picture": "Beeld (videomonitor)",
+          "waveform_luma": "Waveform (luma)",
+          "vector_100": "Vectorscoop 100%",
+          "vector_75": "Vectorscoop 75%",
+          "parade_rgb": "RGB-parade",
+          "parade_yuv": "YUV-parade",
+          "histogram": "Histogram",
+          "audio_dbfs": "Audio dBFS",
+          "audio_dbvu": "Audio dBVU"
+        }
+      },
+      "audio_channels": {
+        "name": "Monitor {monitor} audiokanalen",
+        "state": {
+          "ch_1_2": "Kanalen 1 & 2",
+          "ch_3_4": "Kanalen 3 & 4",
+          "ch_5_6": "Kanalen 5 & 6",
+          "ch_7_8": "Kanalen 7 & 8",
+          "ch_9_10": "Kanalen 9 & 10",
+          "ch_11_12": "Kanalen 11 & 12",
+          "ch_13_14": "Kanalen 13 & 14",
+          "ch_15_16": "Kanalen 15 & 16"
+        }
+      },
+      "tally_color": {
+        "name": "Monitor {monitor} tallykleur",
+        "state": {
+          "none": "Geen",
+          "red": "Rood",
+          "green": "Groen",
+          "blue": "Blauw",
+          "white": "Wit"
+        }
+      },
+      "widescreen_sd": {
+        "name": "Monitor {monitor} SD-beeldverhouding",
+        "state": {
+          "on": "16:9",
+          "off": "4:3",
+          "auto": "Automatisch"
+        }
+      },
+      "lut": {
+        "name": "Monitor {monitor} LUT",
+        "state": {
+          "lut_1": "LUT 1",
+          "lut_2": "LUT 2",
+          "disabled": "Uit"
+        }
+      },
+      "monitor_input": {
+        "name": "Monitor {monitor} ingang",
+        "state": {
+          "sdi_a": "SDI A",
+          "sdi_b": "SDI B",
+          "optical": "Optisch"
+        }
+      }
+    },
+    "sensor": {
+      "ip_address": {
+        "name": "IP-adres"
+      },
+      "hostname": {
+        "name": "Hostnaam"
+      },
+      "protocol_version": {
+        "name": "Protocolversie"
+      },
+      "model": {
+        "name": "Model"
+      }
+    },
+    "switch": {
+      "tally": {
+        "name": "Monitor {monitor} tally"
+      }
+    },
+    "text": {
+      "device_name": {
+        "name": "Apparaatnaam"
+      }
+    }
+  }
+}
