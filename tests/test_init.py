@@ -285,7 +285,10 @@ async def test_rename_with_line_break_is_refused(
     await _setup(hass, config_entry)
     name = _entity_id(hass, "text", config_entry, "device_name")
 
-    with pytest.raises(ServiceValidationError):
+    # Home Assistant refuses the value against the entity's pattern before the
+    # integration sees it: a ValueError in current releases, a
+    # ServiceValidationError (a HomeAssistantError) in newer ones.
+    with pytest.raises((ValueError, HomeAssistantError)):
         await _call(hass, "text", "set_value", name, value="Studio\nDynamic IP: false")
 
     assert fake_client.instances[0].sent == []
