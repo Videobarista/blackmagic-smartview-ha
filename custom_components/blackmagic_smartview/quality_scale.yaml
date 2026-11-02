@@ -1,0 +1,45 @@
+# Self-assessment against the Bronze tier of the Home Assistant integration
+# quality scale. Home Assistant only grades core integrations; this file
+# records which Bronze rules this custom integration follows.
+# https://developers.home-assistant.io/docs/core/integration-quality-scale/
+rules:
+  action-setup:
+    status: exempt
+    comment: The integration provides no service actions.
+  appropriate-polling:
+    status: exempt
+    comment: Local push. The monitor sends its state itself; nothing is polled.
+  brands: done
+  common-modules: done
+  config-flow-test-coverage: done
+  config-flow: done
+  dependency-transparency:
+    status: done
+    comment: No external requirements; the protocol client is part of the integration.
+  docs-actions:
+    status: exempt
+    comment: The integration provides no service actions.
+  docs-conditions:
+    status: exempt
+    comment: The integration provides no conditions.
+  docs-high-level-description: done
+  docs-installation-instructions: done
+  docs-removal-instructions: done
+  docs-triggers:
+    status: exempt
+    comment: The integration provides no triggers.
+  entity-event-setup: done
+  entity-unique-id: done
+  has-entity-name: done
+  runtime-data: done
+  test-before-configure: done
+  test-before-setup:
+    status: exempt
+    comment: >-
+      Deliberate. A switched-off studio is normal, so once the monitor has been
+      seen, setup never fails on an unreachable monitor: entities show as
+      unavailable, a Connection sensor reports the state, and the client
+      reconnects by itself. Setup does fail (and is retried) when the monitor
+      has never been reached. The address is tested in the config flow and in
+      reconfigure.
+  unique-config-entry: done

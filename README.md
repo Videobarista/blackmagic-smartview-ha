@@ -4,6 +4,8 @@
 [![Hassfest](https://github.com/Videobarista/blackmagic-smartview-ha/actions/workflows/hassfest.yml/badge.svg?branch=main)](https://github.com/Videobarista/blackmagic-smartview-ha/actions/workflows/hassfest.yml)
 [![HACS](https://github.com/Videobarista/blackmagic-smartview-ha/actions/workflows/hacs.yml/badge.svg?branch=main)](https://github.com/Videobarista/blackmagic-smartview-ha/actions/workflows/hacs.yml)
 [![CodeQL](https://github.com/Videobarista/blackmagic-smartview-ha/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/Videobarista/blackmagic-smartview-ha/actions/workflows/codeql.yml)
+[![Tests](https://github.com/Videobarista/blackmagic-smartview-ha/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/Videobarista/blackmagic-smartview-ha/actions/workflows/tests.yml)
+[![Quality scale: Bronze](https://img.shields.io/badge/quality%20scale-Bronze%20aligned-cd7f32.svg)](#quality-scale)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Latest release](https://img.shields.io/github/v/release/Videobarista/blackmagic-smartview-ha)](https://github.com/Videobarista/blackmagic-smartview-ha/releases)
 
@@ -101,7 +103,8 @@ channels select picks the pair shown on the audio meters (1 & 2 up to 15 & 16).
 | Connection | binary sensor (stays available when the monitor is off) |
 | DHCP, Mounted inverted | binary sensor |
 | IP address (netmask, gateway and static settings as attributes) | sensor |
-| Hostname, Model, Protocol version | sensor |
+| Model, Protocol version | sensor |
+| Hostname (disabled by default: it contains the MAC address) | sensor |
 | Device name | text |
 
 ## Tally
@@ -138,7 +141,8 @@ monitor in a rack. It temporarily overrides any tally border.
 
 Changing **Device name** makes the monitor restart its network and advertise
 the new name. The connection drops for a moment and the integration reconnects
-by itself.
+by itself. Names are up to 64 printable characters; line breaks are refused.
+A new rename is refused for 30 seconds, while the monitor restarts its network.
 
 ## Network settings
 
@@ -157,7 +161,9 @@ logger:
 ```
 
 **Download diagnostics** on the integration entry shows the full state dump the
-monitor sends, including fields this integration does not use yet.
+monitor sends, including fields this integration does not use yet. IP addresses
+and the hostname are redacted and MAC addresses are masked, so the file can be
+attached to a public issue. Debug logs mask MAC addresses too.
 
 If the monitor rejects a setting (NAK), Home Assistant shows an error and the
 entity does not move. Unreachable monitors log at debug level on purpose: a
@@ -172,9 +178,62 @@ monitor showing a waveform and a tally border), not the Blackmagic Design logo.
 Replace `icon.png` (256x256) and `icon@2x.png` (512x512) with your own artwork
 if you prefer, then restart Home Assistant.
 
+## Removal
+
+Settings → Devices & services → *Blackmagic SmartView / SmartScope* →
+three-dot menu on the entry → **Delete**. To remove the code as well, uninstall
+the repository in HACS and restart Home Assistant. Nothing is changed on the
+monitor itself.
+
 ## Security
 
-The protocol has no authentication or encryption. See [SECURITY.md](SECURITY.md).
+The SmartView protocol has no authentication or encryption: anyone who can
+reach TCP port 9992 can change tally, scopes and picture settings, rename the
+monitor or change its network settings. **The network is the real protection.**
+
+Recommended network setup:
+
+- Put the monitor in an AV or management VLAN, with a DHCP reservation.
+- Firewall: allow only Home Assistant (and the computer running Blackmagic
+  SmartView Setup) to reach the monitor on TCP 9992; block everything else into
+  that VLAN.
+- Block internet access for the monitor. It does not need any.
+- No port forwarding and no UPnP.
+- Discovery uses mDNS. Across VLANs it needs an mDNS reflector; entering the IP
+  address by hand works just as well.
+
+What the integration adds itself:
+
+- Values never contain line breaks or control characters, so a name or setting
+  can never add commands (no command injection). Host names are validated.
+- Data from the monitor is treated as untrusted: line length, block size,
+  number of blocks, number of monitors (A to H) and value length are limited, so
+  a faulty or malicious device cannot make memory grow.
+- Updates pushed by the monitor are bundled to at most ten per second, and an
+  error in one entity never breaks the connection.
+- One connection, commands one at a time, reconnects with back-off: the
+  integration never floods the monitor.
+- No listening ports, no external Python packages, nothing stored but host,
+  port and the model, name and monitor count for offline starts.
+- CI runs with read-only permissions; GitHub's own actions are pinned to commit
+  hashes and kept current by Dependabot.
+
+See [SECURITY.md](SECURITY.md) to report a vulnerability.
+
+## Quality scale
+
+Aligned with the Home Assistant quality scale: Bronze. Home Assistant only
+grades core integrations, so this is a self-assessment, recorded rule by rule
+in [`quality_scale.yaml`](custom_components/blackmagic_smartview/quality_scale.yaml).
+
+One Bronze rule is deliberately exempt: *test-before-setup*. That rule wants
+setup to fail when the device cannot be reached, which would turn every
+switched-off studio into a "Failed to set up" error. The connection is tested
+in the config flow and in reconfigure instead.
+
+The test suite covers the config flow (user, discovery and reconfigure), setup
+with the monitor on and off, all controls, diagnostics redaction, and the
+protocol client against a simulated monitor, including hostile input.
 
 ## License
 

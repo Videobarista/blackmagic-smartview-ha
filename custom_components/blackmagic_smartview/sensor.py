@@ -49,6 +49,8 @@ SENSORS: tuple[SmartViewSensorDescription, ...] = (
         key="hostname",
         translation_key="hostname",
         entity_category=EntityCategory.DIAGNOSTIC,
+        # Contains the MAC address; off by default so it stays out of history
+        entity_registry_enabled_default=False,
         value_fn=lambda state: state.device.get("Hostname"),
     ),
     SmartViewSensorDescription(

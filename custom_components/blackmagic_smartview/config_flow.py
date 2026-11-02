@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ipaddress
 import logging
+import re
 from typing import Any
 
 import voluptuous as vol
@@ -19,9 +21,28 @@ from .const import (
     DEFAULT_NAME,
     DEFAULT_PORT,
     DOMAIN,
+    NAME_MAX_LENGTH,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+_HOSTNAME_LABEL = re.compile(r"^(?!-)[A-Za-z0-9-]{1,63}(?<!-)$")
+
+
+def valid_host(host: str) -> bool:
+    """Return True for an IP address or a plain hostname (no URL, path or port)."""
+    if not host or len(host) > 253:
+        return False
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        return True
+    labels = host.removesuffix(".").split(".")
+    if all(label.isdigit() for label in labels):
+        return False  # looks like an IPv4 address, but is not a valid one
+    return all(_HOSTNAME_LABEL.match(label) for label in labels)
 
 
 def _schema(host: str = "", port: int = DEFAULT_PORT) -> vol.Schema:
@@ -38,18 +59,20 @@ def _schema(host: str = "", port: int = DEFAULT_PORT) -> vol.Schema:
 
 def entry_data(host: str, port: int, state: SmartViewState) -> dict[str, Any]:
     """Return config entry data, including what is needed to start while offline."""
+    name = state.device.get("Name")
     return {
         CONF_HOST: host,
         CONF_PORT: port,
         CONF_CACHED_MODEL: state.model,
-        CONF_CACHED_NAME: state.device.get("Name"),
+        CONF_CACHED_NAME: name[:NAME_MAX_LENGTH] if name else None,
         CONF_CACHED_MONITORS: state.monitor_count,
     }
 
 
 def _title(state: SmartViewState) -> str:
     """Return a friendly title for the config entry."""
-    return state.device.get("Name") or state.model or DEFAULT_NAME
+    name = state.device.get("Name")
+    return (name[:NAME_MAX_LENGTH] if name else None) or state.model or DEFAULT_NAME
 
 
 class SmartViewConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -59,16 +82,22 @@ class SmartViewConfigFlow(ConfigFlow, domain=DOMAIN):
 
     def __init__(self) -> None:
         """Initialise the flow."""
-        self._host: str | None = None
+        # Filled in by the zeroconf step, which always runs before the confirm step
+        self._host = ""
         self._port: int = DEFAULT_PORT
-        self._state: SmartViewState | None = None
+        self._state = SmartViewState()
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Handle a flow started by the user."""
         errors: dict[str, str] = {}
-        if user_input is not None:
-            host = user_input[CONF_HOST].strip()
-            port = user_input[CONF_PORT]
+        if user_input is None:
+            return self.async_show_form(step_id="user", data_schema=_schema(), errors=errors)
+
+        host = user_input[CONF_HOST].strip()
+        port = user_input[CONF_PORT]
+        if not valid_host(host):
+            errors[CONF_HOST] = "invalid_host"
+        else:
             await self.async_set_unique_id(host.lower())
             self._abort_if_unique_id_configured()
             try:
@@ -80,15 +109,11 @@ class SmartViewConfigFlow(ConfigFlow, domain=DOMAIN):
                 return self.async_create_entry(
                     title=_title(state), data=entry_data(host, port, state)
                 )
-            return self.async_show_form(
-                step_id="user", data_schema=_schema(host, port), errors=errors
-            )
-
-        return self.async_show_form(step_id="user", data_schema=_schema(), errors=errors)
+        return self.async_show_form(step_id="user", data_schema=_schema(host, port), errors=errors)
 
     async def async_step_zeroconf(self, discovery_info: ZeroconfServiceInfo) -> ConfigFlowResult:
         """Handle a SmartView found via zeroconf (_blackmagic._tcp)."""
-        host = discovery_info.host
+        host = discovery_info.host  # always an IP address from zeroconf
         await self.async_set_unique_id(host.lower())
         self._abort_if_unique_id_configured()
 
@@ -108,8 +133,6 @@ class SmartViewConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Confirm adding a discovered device."""
-        if self._host is None or self._state is None:
-            return self.async_abort(reason="cannot_connect")
         if user_input is not None:
             return self.async_create_entry(
                 title=_title(self._state),
@@ -133,27 +156,41 @@ class SmartViewConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         host = entry.data[CONF_HOST]
         port = entry.data[CONF_PORT]
-        if user_input is not None:
-            host = user_input[CONF_HOST].strip()
-            port = user_input[CONF_PORT]
-            taken = any(
-                other.entry_id != entry.entry_id and other.unique_id == host.lower()
-                for other in self._async_current_entries(include_ignore=False)
+        if user_input is None:
+            return self.async_show_form(
+                step_id="reconfigure", data_schema=_schema(host, port), errors=errors
             )
-            if taken:
-                errors["base"] = "already_configured"
+
+        same_address = user_input[CONF_HOST].strip() == host and user_input[CONF_PORT] == port
+        host = user_input[CONF_HOST].strip()
+        port = user_input[CONF_PORT]
+        if not valid_host(host):
+            errors[CONF_HOST] = "invalid_host"
+        elif any(
+            other.entry_id != entry.entry_id and other.unique_id == host.lower()
+            for other in self._async_current_entries(include_ignore=False)
+        ):
+            errors["base"] = "already_configured"
+        else:
+            # The monitor has few connection slots. When the address is unchanged
+            # and the running integration is connected, use its state instead of
+            # opening a second connection that the monitor may refuse.
+            client = getattr(entry, "runtime_data", None)
+            if same_address and isinstance(client, SmartViewClient) and client.connected:
+                state = client.state
             else:
                 try:
                     state = await SmartViewClient.probe(host, port)
                 except SmartViewConnectionError as err:
                     _LOGGER.debug("Cannot connect to %s:%s: %s", host, port, err)
                     errors["base"] = "cannot_connect"
-                else:
-                    return self.async_update_reload_and_abort(
-                        entry,
-                        unique_id=host.lower(),
-                        data=entry_data(host, port, state),
-                    )
+                    state = None
+            if state is not None:
+                return self.async_update_reload_and_abort(
+                    entry,
+                    unique_id=host.lower(),
+                    data=entry_data(host, port, state),
+                )
         return self.async_show_form(
             step_id="reconfigure", data_schema=_schema(host, port), errors=errors
         )

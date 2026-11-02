@@ -28,8 +28,19 @@ Protocol on TCP port 9992. Relevant to note:
   port 9992 can read and change the device configuration. Keep video equipment
   on a management VLAN that is not routed to the internet.
 - The integration stores only the host and port in the Home Assistant config
-  entry. No credentials are involved, because the protocol has none.
+  entry, plus the model, name and monitor count so it can start while the
+  monitor is off. No credentials are involved, because the protocol has none.
 - Connections are outbound only. The integration opens no listening ports.
+- Outgoing values are checked for line breaks and control characters, so they
+  cannot inject commands. Data from the device is size-limited and treated as
+  untrusted.
+- Diagnostics redact IP addresses and the hostname, and mask MAC addresses.
+- The CI workflows run with read-only permissions. GitHub's own actions are
+  pinned to commit hashes; `hacs/action` and Home Assistant's `hassfest` follow
+  their main branches as their maintainers recommend.
+
+See the Security section of the [README](README.md#security) for the
+recommended network setup.
 
 Vulnerabilities in the SmartView firmware itself belong to Blackmagic Design,
 not to this repository.

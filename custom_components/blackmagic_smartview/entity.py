@@ -6,23 +6,37 @@ from collections.abc import Awaitable
 import logging
 
 from homeassistant.core import callback
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import Entity
 
 from . import SmartViewConfigEntry
-from .client import SmartViewClient, SmartViewCommandError, SmartViewError
-from .const import COMMON_FIELDS, DEFAULT_NAME, DOMAIN, MANUFACTURER, MODEL_FIELDS
+from .client import (
+    MONITOR_IDS,
+    SmartViewClient,
+    SmartViewCommandError,
+    SmartViewError,
+    SmartViewValueError,
+)
+from .const import (
+    COMMON_FIELDS,
+    DEFAULT_NAME,
+    DOMAIN,
+    MANUFACTURER,
+    MODEL_FIELDS,
+    NAME_MAX_LENGTH,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 
 def monitor_ids(client: SmartViewClient) -> list[str]:
-    """Return the monitor letters of the device (A, B, ...)."""
-    if client.state.monitors:
-        return sorted(client.state.monitors)
+    """Return the monitor letters of the device (A, B, ... at most H)."""
+    reported = [monitor for monitor in MONITOR_IDS if monitor in client.state.monitors]
+    if reported:
+        return reported
     count = client.state.monitor_count or 1
-    return [chr(ord("A") + index) for index in range(count)]
+    return list(MONITOR_IDS[:count])
 
 
 def monitor_supports(client: SmartViewClient, monitor: str, field: str) -> bool:
@@ -55,7 +69,7 @@ class SmartViewEntity(Entity):
             identifiers={(DOMAIN, entry.entry_id)},
             manufacturer=MANUFACTURER,
             model=model,
-            name=state.device.get("Name") or model or DEFAULT_NAME,
+            name=(state.device.get("Name") or "")[:NAME_MAX_LENGTH] or model or DEFAULT_NAME,
             sw_version=(f"Protocol {state.protocol_version}" if state.protocol_version else None),
         )
 
@@ -97,6 +111,12 @@ async def async_send(entity: SmartViewEntity, command: Awaitable[None], fields: 
     """Await a client command and turn failures into a readable error in Home Assistant."""
     try:
         await command
+    except SmartViewValueError as err:
+        _LOGGER.debug("Refused to send to %s: %s", entity._client.host, err)
+        raise ServiceValidationError(
+            "This value cannot be sent to the SmartView: line breaks and other "
+            "control characters are not allowed."
+        ) from err
     except SmartViewCommandError as err:
         _LOGGER.debug("Rejected by %s: %s", entity._client.host, err)
         entity.async_write_ha_state()

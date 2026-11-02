@@ -2,7 +2,12 @@ line-length = 100
 target-version = "py313"
 
 [lint]
-select = ["B", "E", "F", "I", "UP", "W"]
+# S = flake8-bandit security checks, on top of the standard rule sets
+select = ["B", "E", "F", "I", "UP", "W", "S"]
+
+[lint.per-file-ignores]
+# pytest uses plain asserts
+"tests/*" = ["S101"]
 
 [lint.isort]
 force-sort-within-sections = true

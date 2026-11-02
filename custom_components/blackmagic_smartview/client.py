@@ -21,16 +21,29 @@ Behaviour seen on a SmartScope Duo 4K (protocol 1.3):
 * Right after a previous connection was closed, the device may close a new
   connection straight away. Connecting is therefore retried a few times.
 
+Security model. The protocol has no authentication or encryption, so the
+client cannot verify who it talks to. What it can do:
+
+* Outgoing values never contain line breaks or other control characters, so a
+  value can never add lines or blocks to a command (no command injection).
+* Data from the device is untrusted: lines, blocks, keys, values, the number
+  of monitors and the number of unknown blocks are all limited, so a faulty or
+  malicious device cannot make memory grow or flood Home Assistant.
+* State changes are passed on at most every ``NOTIFY_INTERVAL`` seconds, and
+  an error in one listener never breaks the connection.
+* MAC addresses are masked in debug logs.
+
 This module has no Home Assistant dependencies.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 import contextlib
 from dataclasses import dataclass, field
 import logging
+import re
 import socket
 
 from .const import (
@@ -47,6 +60,13 @@ from .const import (
     KEEPALIVE_COUNT,
     KEEPALIVE_IDLE,
     KEEPALIVE_INTERVAL,
+    MAX_KEY_LENGTH,
+    MAX_LINES_PER_BLOCK,
+    MAX_MONITORS,
+    MAX_OTHER_BLOCKS,
+    MAX_VALUE_LENGTH,
+    NOTIFY_INTERVAL,
+    READ_LINE_LIMIT,
     RECONNECT_MAX_DELAY,
     RECONNECT_MIN_DELAY,
     TCP_USER_TIMEOUT_MS,
@@ -56,6 +76,23 @@ _LOGGER = logging.getLogger(__name__)
 
 # Fields that are transient on the device and must not be stored optimistically
 _TRANSIENT_FIELDS = frozenset({FIELD_IDENTIFY})
+# Monitor letters the client accepts from the device
+MONITOR_IDS: tuple[str, ...] = tuple(chr(ord("A") + index) for index in range(MAX_MONITORS))
+# A MAC address, with or without separators (Blackmagic hostnames end in one)
+_MAC_RE = re.compile(
+    r"(?i)(?<![0-9a-f])(?:(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}|[0-9a-f]{12})(?![0-9a-f])"
+)
+_MAC_MASK = "xxxxxxxxxxxx"
+
+
+def mask_mac(text: str) -> str:
+    """Replace MAC addresses in a text, e.g. in ``SmartScopeDuo-7c2e0d000001``."""
+    return _MAC_RE.sub(_MAC_MASK, text)
+
+
+def _has_control_chars(text: str) -> bool:
+    """Return True when a text contains a line break or other control character."""
+    return any(ord(char) < 32 or ord(char) == 127 for char in text)
 
 
 class SmartViewError(Exception):
@@ -68,6 +105,10 @@ class SmartViewConnectionError(SmartViewError):
 
 class SmartViewCommandError(SmartViewError):
     """Raised when the device rejects a command (NAK or error line)."""
+
+
+class SmartViewValueError(SmartViewError, ValueError):
+    """Raised before sending when a value is not allowed in a command."""
 
 
 class _DeviceClosedError(SmartViewConnectionError):
@@ -91,15 +132,19 @@ class SmartViewState:
 
     @property
     def monitor_count(self) -> int | None:
-        """Return the number of monitors (LCDs) the device reports."""
+        """Return the number of monitors (LCDs), limited to ``MAX_MONITORS``."""
         value = self.device.get("Monitors")
         if value is None:
             return None
         try:
-            return int(value)
+            count = int(value)
         except ValueError:
-            _LOGGER.debug("Unexpected Monitors value: %s", value)
+            _LOGGER.debug("Unexpected Monitors value: %r", value)
             return None
+        if count < 1:
+            _LOGGER.debug("Unexpected Monitors value: %r", value)
+            return None
+        return min(count, MAX_MONITORS)
 
     def as_dict(self) -> dict[str, object]:
         """Return the state as a plain dict (used for diagnostics)."""
@@ -132,6 +177,19 @@ def _enable_keepalive(writer: asyncio.StreamWriter) -> None:
         _LOGGER.debug("Could not enable TCP keepalive: %s", err)
 
 
+def _validate_outgoing(header: str, fields: Mapping[str, str]) -> None:
+    """Refuse anything that could add lines or blocks to a command."""
+    if not header or _has_control_chars(header):
+        raise SmartViewValueError(f"Invalid block header: {header!r}")
+    if not fields:
+        raise SmartViewValueError("A command needs at least one field")
+    for key, value in fields.items():
+        if not key or ":" in key or _has_control_chars(key) or len(key) > MAX_KEY_LENGTH:
+            raise SmartViewValueError(f"Invalid field name: {key!r}")
+        if _has_control_chars(value) or len(value) > MAX_VALUE_LENGTH:
+            raise SmartViewValueError(f"Invalid value for {key}: {value!r}")
+
+
 class SmartViewClient:
     """Persistent push client for a SmartView or SmartScope monitor."""
 
@@ -152,7 +210,13 @@ class SmartViewClient:
         self._command_lock = asyncio.Lock()
         self._pending: asyncio.Future[bool] | None = None
 
+        # Block parser state
+        self._header: str | None = None
+        self._body: list[str] = []
+        self._overflow = False
+
         self._listeners: list[Callable[[], None]] = []
+        self._flush_handle: asyncio.TimerHandle | None = None
 
     # ------------------------------------------------------------------ public
 
@@ -212,6 +276,8 @@ class SmartViewClient:
 
     async def set_monitor(self, monitor: str, fields: dict[str, str]) -> None:
         """Change one or more settings of a monitor (``A``, ``B``)."""
+        if monitor not in MONITOR_IDS:
+            raise SmartViewValueError(f"Unknown monitor: {monitor!r}")
         await self.send_block(f"{BLOCK_MONITOR_PREFIX}{monitor}", fields)
 
     async def set_device(self, fields: dict[str, str]) -> None:
@@ -219,7 +285,8 @@ class SmartViewClient:
         await self.send_block(BLOCK_DEVICE, fields)
 
     async def send_block(self, header: str, fields: dict[str, str]) -> None:
-        """Send a block and wait for ACK. Raises on NAK or connection loss."""
+        """Send a block and wait for ACK. Raises on NAK, no answer or a bad value."""
+        _validate_outgoing(header, fields)
         lines = [f"{header}:"] + [f"{key}: {value}" for key, value in fields.items()]
         acked = await self._send_raw("\n".join(lines) + "\n\n")
         if acked is None:
@@ -233,17 +300,17 @@ class SmartViewClient:
             for key, value in fields.items():
                 if key not in _TRANSIENT_FIELDS:
                     target[key] = value
-            self._notify()
+            self._notify(immediate=True)
 
     def preload(self, model: str | None, name: str | None, monitors: int | None) -> None:
         """Fill in the last known identity, so entities can be created while offline."""
         device: dict[str, str] = {}
         if model:
-            device["Model"] = model
+            device["Model"] = model[:MAX_VALUE_LENGTH]
         if name:
-            device["Name"] = name
+            device["Name"] = name[:MAX_VALUE_LENGTH]
         if monitors:
-            device["Monitors"] = str(monitors)
+            device["Monitors"] = str(max(1, min(int(monitors), MAX_MONITORS)))
         self.state = SmartViewState(device=device)
 
     @classmethod
@@ -263,10 +330,12 @@ class SmartViewClient:
         await self._teardown()
         self.state = SmartViewState()
         self._dump_complete = asyncio.Event()
+        self._reset_parser()
 
         try:
             self._reader, self._writer = await asyncio.wait_for(
-                asyncio.open_connection(self.host, self.port), CONNECT_TIMEOUT
+                asyncio.open_connection(self.host, self.port, limit=READ_LINE_LIMIT),
+                CONNECT_TIMEOUT,
             )
         except (OSError, TimeoutError) as err:
             raise SmartViewConnectionError(
@@ -285,6 +354,8 @@ class SmartViewClient:
             )
         finally:
             dump_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await dump_task
 
         if read_task.done():
             await self._teardown()
@@ -305,7 +376,7 @@ class SmartViewClient:
 
         self._connected = True
         _LOGGER.debug("Connected to %s (%s)", self.host, self.state.model)
-        self._notify()
+        self._notify(immediate=True)
 
     async def _send_raw(self, payload: str) -> bool | None:
         """Write a payload and wait for ACK/NAK. Returns True/False/None (no answer)."""
@@ -316,7 +387,7 @@ class SmartViewClient:
 
             loop = asyncio.get_running_loop()
             self._pending = loop.create_future()
-            _LOGGER.debug("Send to %s: %r", self.host, payload)
+            _LOGGER.debug("Send to %s: %r", self.host, mask_mac(payload))
             try:
                 writer.write(payload.encode("utf-8"))
                 await writer.drain()
@@ -327,67 +398,93 @@ class SmartViewClient:
             try:
                 return await asyncio.wait_for(self._pending, COMMAND_TIMEOUT)
             except TimeoutError:
-                _LOGGER.debug("No ACK/NAK from %s for %r", self.host, payload)
+                _LOGGER.debug("No ACK/NAK from %s for %r", self.host, mask_mac(payload))
                 return None
             finally:
                 self._pending = None
 
     def _block_target(self, header: str) -> dict[str, str] | None:
-        """Return the state dict that belongs to a block header."""
+        """Return the state dict that belongs to a block header, if it is a known one."""
         if header == BLOCK_DEVICE:
             return self.state.device
         if header == BLOCK_NETWORK:
             return self.state.network
         if header.startswith(BLOCK_MONITOR_PREFIX):
             monitor = header[len(BLOCK_MONITOR_PREFIX) :].strip()
+            if monitor not in MONITOR_IDS:
+                return None
             return self.state.monitors.setdefault(monitor, {})
         return None
 
     async def _read_loop(self) -> None:
-        """Read lines from the device and dispatch complete blocks."""
+        """Read lines from the device and feed them to the parser."""
         reader = self._reader
         if reader is None:
             return
-        header: str | None = None
-        body: list[str] = []
         try:
             while True:
                 raw = await reader.readline()
                 if not raw:
                     _LOGGER.debug("Connection to %s closed by device", self.host)
                     return
-                line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
-
-                if header is None:
-                    stripped = line.strip()
-                    if not stripped:
-                        continue
-                    if stripped in ("ACK", "NAK"):
-                        _LOGGER.debug("%s from %s", stripped, self.host)
-                        self._resolve_pending(stripped == "ACK")
-                        continue
-                    if stripped.startswith("#"):
-                        # e.g. "# Error: 1.0: syntax error, unexpected identifier"
-                        _LOGGER.debug("Device message from %s: %s", self.host, stripped)
-                        if "error" in stripped.lower():
-                            self._resolve_pending(False)
-                        continue
-                    if stripped.endswith(":"):
-                        header = stripped[:-1].strip()
-                        body = []
-                        continue
-                    _LOGGER.debug("Ignoring stray line from %s: %r", self.host, line)
-                    continue
-
-                if line.strip():
-                    body.append(line)
-                    continue
-
-                self._handle_block(header, body)
-                header = None
-                body = []
+                self._process_line(raw.decode("utf-8", errors="replace").rstrip("\r\n"))
         except (OSError, asyncio.IncompleteReadError, ValueError) as err:
+            # ValueError: a line longer than READ_LINE_LIMIT
             _LOGGER.debug("Read from %s failed: %s", self.host, err)
+
+    def feed(self, text: str) -> None:
+        """Feed text as received from the device to the parser, line by line."""
+        for line in text.split("\n"):
+            self._process_line(line.rstrip("\r"))
+
+    def _reset_parser(self) -> None:
+        """Forget any half-received block."""
+        self._header = None
+        self._body = []
+        self._overflow = False
+
+    def _process_line(self, line: str) -> None:
+        """Handle one line from the device."""
+        if self._header is None:
+            stripped = line.strip()
+            if not stripped:
+                return
+            if stripped in ("ACK", "NAK"):
+                _LOGGER.debug("%s from %s", stripped, self.host)
+                self._resolve_pending(stripped == "ACK")
+                return
+            if stripped.startswith("#"):
+                # e.g. "# Error: 1.0: syntax error, unexpected identifier"
+                _LOGGER.debug("Device message from %s: %s", self.host, mask_mac(stripped))
+                if "error" in stripped.lower():
+                    self._resolve_pending(False)
+                return
+            if stripped.endswith(":"):
+                self._header = stripped[:-1].strip()
+                self._body = []
+                self._overflow = False
+                return
+            _LOGGER.debug("Ignoring stray line from %s: %r", self.host, mask_mac(line))
+            return
+
+        if line.strip():
+            if len(self._body) < MAX_LINES_PER_BLOCK:
+                self._body.append(line)
+            else:
+                self._overflow = True
+            return
+
+        header, body, overflow = self._header, self._body, self._overflow
+        self._reset_parser()
+        if overflow:
+            _LOGGER.debug(
+                "Dropped block %r from %s: more than %s lines",
+                header[:MAX_KEY_LENGTH],
+                self.host,
+                MAX_LINES_PER_BLOCK,
+            )
+            return
+        self._handle_block(header, body)
 
     def _resolve_pending(self, acked: bool) -> None:
         """Resolve the outstanding command future, if any."""
@@ -399,34 +496,58 @@ class SmartViewClient:
         fields: dict[str, str] = {}
         for line in body:
             key, sep, value = line.partition(":")
-            if not sep:
-                _LOGGER.debug("Ignoring line without colon in %s: %r", header, line)
+            key = key.strip()
+            if not sep or not key or len(key) > MAX_KEY_LENGTH:
+                _LOGGER.debug("Ignoring line in %s: %r", header[:MAX_KEY_LENGTH], mask_mac(line))
                 continue
-            fields[key.strip()] = value.strip()
+            fields[key] = value.strip()[:MAX_VALUE_LENGTH]
 
-        _LOGGER.debug("Block from %s: %s %s", self.host, header, fields)
+        _LOGGER.debug(
+            "Block from %s: %s %s",
+            self.host,
+            header[:MAX_KEY_LENGTH],
+            {key: mask_mac(value) for key, value in fields.items()},
+        )
 
         if header == BLOCK_PREAMBLE:
             self.state.protocol_version = fields.get("Version")
         else:
             target = self._block_target(header)
             if target is None:
-                self.state.other_blocks.setdefault(header, {}).update(fields)
-            else:
-                target.update(fields)
+                target = self._other_block(header)
+            if target is not None:
+                for key, value in fields.items():
+                    # Existing keys are always updated; new keys only up to a limit
+                    if key in target or len(target) < MAX_LINES_PER_BLOCK:
+                        target[key] = value
 
         if not self._dump_complete.is_set() and self._initial_dump_received():
             self._dump_complete.set()
         if self._connected:
             self._notify()
 
+    def _other_block(self, header: str) -> dict[str, str] | None:
+        """Return storage for a block the integration does not use, within limits."""
+        if header.startswith(BLOCK_MONITOR_PREFIX):
+            _LOGGER.debug("Ignoring unsupported monitor block %r", header[:MAX_KEY_LENGTH])
+            return None
+        if len(header) > MAX_KEY_LENGTH:
+            return None
+        blocks = self.state.other_blocks
+        if header in blocks:
+            return blocks[header]
+        if len(blocks) >= MAX_OTHER_BLOCKS:
+            _LOGGER.debug("Ignoring block %r: too many unknown blocks", header)
+            return None
+        blocks[header] = {}
+        return blocks[header]
+
     def _initial_dump_received(self) -> bool:
         """Return True when the device block and all monitor blocks have arrived."""
         if not self.state.device:
             return False
         count = self.state.monitor_count or 1
-        expected = {chr(ord("A") + index) for index in range(count)}
-        return expected.issubset(self.state.monitors)
+        return set(MONITOR_IDS[:count]).issubset(self.state.monitors)
 
     async def _supervise(self) -> None:
         """Keep the connection alive and reconnect with back-off."""
@@ -468,6 +589,7 @@ class SmartViewClient:
         """Close the socket and stop the read task."""
         was_connected = self._connected
         self._connected = False
+        self._cancel_flush()
 
         task = self._read_task
         if task is not None and task is not asyncio.current_task() and not task.done():
@@ -479,14 +601,43 @@ class SmartViewClient:
         await self._close_transport()
         self._reader = None
         self._writer = None
+        self._reset_parser()
 
         if self._pending is not None and not self._pending.done():
             self._pending.set_exception(SmartViewConnectionError("Connection closed"))
 
         if was_connected:
-            self._notify()
+            self._notify(immediate=True)
 
-    def _notify(self) -> None:
-        """Call all registered listeners."""
+    def _notify(self, immediate: bool = False) -> None:
+        """Tell listeners about a change, at most once per ``NOTIFY_INTERVAL``.
+
+        Connection changes and acknowledged commands are passed on at once;
+        changes pushed by the device are bundled, so a flood of updates from the
+        device cannot flood Home Assistant.
+        """
+        if immediate:
+            self._cancel_flush()
+            self._fire_listeners()
+            return
+        if self._flush_handle is None:
+            self._flush_handle = asyncio.get_running_loop().call_later(NOTIFY_INTERVAL, self._flush)
+
+    def _flush(self) -> None:
+        """Pass on bundled changes."""
+        self._flush_handle = None
+        self._fire_listeners()
+
+    def _cancel_flush(self) -> None:
+        """Drop a pending bundled notification."""
+        if self._flush_handle is not None:
+            self._flush_handle.cancel()
+            self._flush_handle = None
+
+    def _fire_listeners(self) -> None:
+        """Call all listeners; an error in one never breaks the connection."""
         for listener in list(self._listeners):
-            listener()
+            try:
+                listener()
+            except Exception:
+                _LOGGER.exception("Error while updating a SmartView entity")

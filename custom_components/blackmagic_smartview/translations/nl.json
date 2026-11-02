@@ -33,7 +33,8 @@
     },
     "error": {
       "cannot_connect": "Kan geen verbinding maken met de monitor. Controleer het IP-adres en of poort 9992 bereikbaar is.",
-      "already_configured": "Deze monitor is al geconfigureerd."
+      "already_configured": "Deze monitor is al geconfigureerd.",
+      "invalid_host": "Vul alleen een IP-adres of hostnaam in, zonder http://, pad of poort."
     },
     "abort": {
       "already_configured": "Deze monitor is al geconfigureerd.",

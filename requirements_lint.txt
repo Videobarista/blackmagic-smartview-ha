@@ -1,0 +1,2 @@
+# Lint dependency, pinned. Dependabot proposes updates monthly.
+ruff==0.16.8

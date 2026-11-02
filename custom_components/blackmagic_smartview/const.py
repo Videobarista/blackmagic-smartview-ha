@@ -29,6 +29,23 @@ TCP_USER_TIMEOUT_MS: Final = 60_000
 RECONNECT_MIN_DELAY: Final = 5.0
 RECONNECT_MAX_DELAY: Final = 60.0
 
+# Limits on what the device may send. Data from the device is treated as
+# untrusted: anything beyond these limits is dropped instead of stored.
+READ_LINE_LIMIT: Final = 4096  # bytes per line; longer lines drop the connection
+MAX_LINES_PER_BLOCK: Final = 64
+MAX_KEY_LENGTH: Final = 64
+MAX_VALUE_LENGTH: Final = 255  # Home Assistant's maximum state length
+MAX_OTHER_BLOCKS: Final = 16  # unknown blocks kept for diagnostics
+MAX_MONITORS: Final = 8  # monitors A to H
+# State changes pushed by the device are passed on at most this often
+NOTIFY_INTERVAL: Final = 0.1
+
+# Device name (text entity): printable characters only, no line breaks
+NAME_MAX_LENGTH: Final = 64
+NAME_PATTERN: Final = r"^[^\x00-\x1f\x7f]+$"
+# Renaming restarts the device's network; refuse a new rename within this time
+RENAME_COOLDOWN: Final = 30.0
+
 # Protocol block headers
 BLOCK_PREAMBLE: Final = "PROTOCOL PREAMBLE"
 BLOCK_DEVICE: Final = "SMARTVIEW DEVICE"
