@@ -8,13 +8,20 @@ on:
     - cron: "0 4 * * 1"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   hassfest:
     name: Hassfest
     runs-on: ubuntu-24.04
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
+      # Home Assistant only publishes hassfest on its master branch; the tagged
+      # release is years old. It runs with a read-only token and no secrets.
       - name: Run hassfest
         uses: home-assistant/actions/hassfest@master

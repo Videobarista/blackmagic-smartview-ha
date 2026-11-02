@@ -8,14 +8,21 @@ on:
     - cron: "0 4 * * 1"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   hacs:
     name: HACS
     runs-on: ubuntu-24.04
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
+      # HACS recommends @main; the last tagged release predates current checks
+      # (such as local brand images). It runs with a read-only token and no secrets.
       - name: Run HACS validation
         uses: hacs/action@main
         with:
