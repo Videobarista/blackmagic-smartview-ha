@@ -11,6 +11,11 @@ import voluptuous as vol
 
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_HOST, CONF_PORT
+from homeassistant.helpers.selector import (
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+)
 from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
 from .client import SmartViewClient, SmartViewConnectionError, SmartViewState
@@ -18,10 +23,14 @@ from .const import (
     CONF_CACHED_MODEL,
     CONF_CACHED_MONITORS,
     CONF_CACHED_NAME,
+    CONF_DEVICE,
     CONF_DEVICE_TYPE,
     DEFAULT_NAME,
     DEFAULT_PORT,
     DETECT_PORTS,
+    DEVICE_DETECT,
+    DEVICE_PORTS,
+    DEVICE_TYPE_AUDIO_MONITOR,
     DEVICE_TYPE_SMARTVIEW,
     DOMAIN,
     NAME_MAX_LENGTH,
@@ -48,25 +57,31 @@ def valid_host(host: str) -> bool:
     return all(_HOSTNAME_LABEL.match(label) for label in labels)
 
 
-def _schema(host: str = "", port: int | None = None) -> vol.Schema:
-    """Return the host/port form schema; the port is optional and detected when empty."""
-    port_key = (
-        vol.Optional(CONF_PORT, description={"suggested_value": port})
-        if port
-        else vol.Optional(CONF_PORT)
-    )
+def _user_schema(host: str = "", device: str = DEVICE_DETECT) -> vol.Schema:
+    """Return the add form: an address and which device to look for (detect by default)."""
     return vol.Schema(
         {
             vol.Required(CONF_HOST, default=host): str,
-            port_key: vol.All(vol.Coerce(int), vol.Range(min=1, max=65535)),
+            vol.Required(CONF_DEVICE, default=device): SelectSelector(
+                SelectSelectorConfig(
+                    options=[DEVICE_DETECT, DEVICE_TYPE_SMARTVIEW, DEVICE_TYPE_AUDIO_MONITOR],
+                    translation_key=CONF_DEVICE,
+                    mode=SelectSelectorMode.LIST,
+                )
+            ),
         }
     )
 
 
-async def _detect(host: str, port: int | None) -> tuple[SmartViewState, int]:
-    """Read the device's state on the given port, or find the port it answers on."""
+def _host_schema(host: str) -> vol.Schema:
+    """Return the reconfigure form: only the address; the device type is known."""
+    return vol.Schema({vol.Required(CONF_HOST, default=host): str})
+
+
+async def _detect(host: str, ports: tuple[int, ...]) -> tuple[SmartViewState, int]:
+    """Read the device's state on the first of the given ports it answers on."""
     error: SmartViewConnectionError | None = None
-    for candidate in (port,) if port else DETECT_PORTS:
+    for candidate in ports:
         try:
             return await SmartViewClient.probe(host, candidate), candidate
         except SmartViewConnectionError as err:
@@ -118,16 +133,17 @@ class SmartViewConfigFlow(ConfigFlow, domain=DOMAIN):
         """Handle a flow started by the user."""
         errors: dict[str, str] = {}
         if user_input is None:
-            return self.async_show_form(step_id="user", data_schema=_schema(), errors=errors)
+            return self.async_show_form(step_id="user", data_schema=_user_schema(), errors=errors)
 
         host = user_input[CONF_HOST].strip()
-        port: int | None = user_input.get(CONF_PORT)
+        device: str = user_input[CONF_DEVICE]
+        ports = (DEVICE_PORTS[device],) if device in DEVICE_PORTS else DETECT_PORTS
         if not valid_host(host):
             errors[CONF_HOST] = "invalid_host"
         else:
             self._async_abort_entries_match({CONF_HOST: host})
             try:
-                state, port = await _detect(host, port)
+                state, port = await _detect(host, ports)
             except SmartViewConnectionError as err:
                 _LOGGER.debug("Cannot connect to %s: %s", host, err)
                 errors["base"] = "cannot_connect"
@@ -138,7 +154,9 @@ class SmartViewConfigFlow(ConfigFlow, domain=DOMAIN):
                 return self.async_create_entry(
                     title=_title(state), data=entry_data(host, port, state)
                 )
-        return self.async_show_form(step_id="user", data_schema=_schema(host, port), errors=errors)
+        return self.async_show_form(
+            step_id="user", data_schema=_user_schema(host, device), errors=errors
+        )
 
     async def async_step_zeroconf(self, discovery_info: ZeroconfServiceInfo) -> ConfigFlowResult:
         """Handle a SmartView found via zeroconf (_blackmagic._tcp)."""
@@ -180,19 +198,18 @@ class SmartViewConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Change host or port of an existing entry."""
+        """Change the address of an existing entry; the device type and port stay."""
         entry = self._get_reconfigure_entry()
         errors: dict[str, str] = {}
         host: str = entry.data[CONF_HOST]
-        port: int | None = entry.data[CONF_PORT]
+        port: int = entry.data[CONF_PORT]
         if user_input is None:
             return self.async_show_form(
-                step_id="reconfigure", data_schema=_schema(host, port), errors=errors
+                step_id="reconfigure", data_schema=_host_schema(host), errors=errors
             )
 
         new_host = user_input[CONF_HOST].strip()
-        new_port: int | None = user_input.get(CONF_PORT)
-        same_address = new_host == host and new_port in (None, port)
+        same_address = new_host == host
         if not valid_host(new_host):
             errors[CONF_HOST] = "invalid_host"
         elif any(
@@ -208,14 +225,14 @@ class SmartViewConfigFlow(ConfigFlow, domain=DOMAIN):
             # opening a second connection that the device may refuse.
             client = getattr(entry, "runtime_data", None)
             if same_address and isinstance(client, SmartViewClient) and client.connected:
-                state, new_port = client.state, port
+                state = client.state
             else:
                 try:
-                    state, new_port = await _detect(new_host, new_port)
+                    state, _ = await _detect(new_host, (port,))
                 except SmartViewConnectionError as err:
                     _LOGGER.debug("Cannot connect to %s: %s", new_host, err)
                     errors["base"] = "cannot_connect"
-            if state is not None and new_port is not None:
+            if state is not None:
                 device_type = entry.data.get(CONF_DEVICE_TYPE, DEVICE_TYPE_SMARTVIEW)
                 if state.device_type != device_type or (
                     state.unique_id is not None and state.unique_id != entry.unique_id
@@ -225,8 +242,8 @@ class SmartViewConfigFlow(ConfigFlow, domain=DOMAIN):
                     return self.async_update_reload_and_abort(
                         entry,
                         unique_id=_unique_id(new_host, state),
-                        data=entry_data(new_host, new_port, state),
+                        data=entry_data(new_host, port, state),
                     )
         return self.async_show_form(
-            step_id="reconfigure", data_schema=_schema(new_host, new_port), errors=errors
+            step_id="reconfigure", data_schema=_host_schema(new_host), errors=errors
         )

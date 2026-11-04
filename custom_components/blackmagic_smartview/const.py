@@ -12,8 +12,15 @@ DEVICE_TYPE_SMARTVIEW: Final = "smartview"  # SmartView / SmartScope
 DEVICE_TYPE_AUDIO_MONITOR: Final = "audio_monitor"  # Audio Monitor 12G (G3)
 DEFAULT_PORT: Final = 9992  # SmartView / SmartScope
 DEFAULT_PORT_AUDIO_MONITOR: Final = 9996
-# Tried in this order when the user leaves the port empty
+# Port per device family; "detect" tries them in this order
+DEVICE_PORTS: Final[dict[str, int]] = {
+    DEVICE_TYPE_SMARTVIEW: DEFAULT_PORT,
+    DEVICE_TYPE_AUDIO_MONITOR: DEFAULT_PORT_AUDIO_MONITOR,
+}
 DETECT_PORTS: Final = (DEFAULT_PORT, DEFAULT_PORT_AUDIO_MONITOR)
+# Config flow field: which device to look for
+CONF_DEVICE: Final = "device"
+DEVICE_DETECT: Final = "detect"
 
 # Stored in the config entry so the integration can start while the monitor is off
 CONF_CACHED_MODEL: Final = "model"

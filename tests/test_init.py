@@ -402,7 +402,9 @@ async def test_audio_monitor_setup(
     assert not any("monitor_a" in entity.unique_id for entity in entities)
 
     assert float(_state(hass, "number", audio_entry, "speaker_volume")) == 114
-    assert float(_state(hass, "number", audio_entry, "headphone_volume")) == 0
+    headphone = registry.async_get(_entity_id(hass, "number", audio_entry, "headphone_volume"))
+    assert headphone is not None
+    assert headphone.disabled_by is er.RegistryEntryDisabler.INTEGRATION
     assert _state(hass, "switch", audio_entry, "mute") == STATE_OFF
     assert _state(hass, "select", audio_entry, "audio_input") == "xlr_aes_ebu"
     assert _state(hass, "select", audio_entry, "meter_mode") == "vu_20"

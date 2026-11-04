@@ -129,6 +129,11 @@ class AudioMonitorVolume(AudioMonitorEntity, NumberEntity):
         super().__init__(entry, key, BLOCK_AUDIO_OUTPUT, f"{FIELD_GAIN} {output}")
         self._attr_translation_key = key
         self._output = output
+        if output == GAIN_HEADPHONE:
+            # Seen on an Audio Monitor 12G (protocol 1.0) without headphones
+            # connected: a headphone volume command changed the speaker volume.
+            # Off by default, so nobody is surprised by loud speakers.
+            self._attr_entity_registry_enabled_default = False
 
     @property
     def native_value(self) -> float | None:

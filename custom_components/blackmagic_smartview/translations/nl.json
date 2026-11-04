@@ -4,14 +4,14 @@
     "step": {
       "user": {
         "title": "Blackmagic SmartView / SmartScope / Audio Monitor",
-        "description": "Vul het IP-adres van het apparaat in. Laat de poort leeg om die te detecteren: 9992 voor SmartView en SmartScope, 9996 voor Audio Monitor. Een vast IP-adres (of DHCP-reservering) wordt aangeraden.",
+        "description": "Vul het IP-adres van het apparaat in. De integratie zoekt zelf uit of het een SmartView / SmartScope (poort 9992) of een Audio Monitor (poort 9996) is. Een vast IP-adres (of DHCP-reservering) wordt aangeraden.",
         "data": {
           "host": "Host",
-          "port": "Poort"
+          "device": "Apparaat"
         },
         "data_description": {
           "host": "IP-adres of hostnaam van de SmartView, SmartScope of Audio Monitor.",
-          "port": "Leeg laten om te detecteren. SmartView en SmartScope gebruiken 9992, Audio Monitor 9996."
+          "device": "Laat 'Automatisch detecteren' staan, tenzij je naar één apparaattype wilt zoeken."
         }
       },
       "zeroconf_confirm": {
@@ -20,14 +20,12 @@
       },
       "reconfigure": {
         "title": "Opnieuw configureren",
-        "description": "Wijzig het IP-adres of de poort van het apparaat.",
+        "description": "Wijzig het IP-adres van het apparaat. Het apparaattype en de poort blijven gelijk.",
         "data": {
-          "host": "Host",
-          "port": "Poort"
+          "host": "Host"
         },
         "data_description": {
-          "host": "IP-adres of hostnaam van de SmartView, SmartScope of Audio Monitor.",
-          "port": "Leeg laten om te detecteren. SmartView en SmartScope gebruiken 9992, Audio Monitor 9996."
+          "host": "IP-adres of hostnaam van de SmartView, SmartScope of Audio Monitor."
         }
       }
     },
@@ -264,6 +262,15 @@
     "text": {
       "device_name": {
         "name": "Apparaatnaam"
+      }
+    }
+  },
+  "selector": {
+    "device": {
+      "options": {
+        "detect": "Automatisch detecteren",
+        "smartview": "SmartView / SmartScope (poort 9992)",
+        "audio_monitor": "Audio Monitor (poort 9996)"
       }
     }
   }

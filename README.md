@@ -64,17 +64,19 @@ HACS → Custom repositories → add this repository URL → category
 services → Add integration → *Blackmagic SmartView / SmartScope / Audio
 Monitor*.
 
-Enter the IP address of the device and leave the port empty: the integration
-tries 9992 (SmartView, SmartScope) and then 9996 (Audio Monitor). Fill in a
-port only if your device uses a different one. SmartView and SmartScope
-monitors that advertise themselves on the network are also discovered
-automatically; an Audio Monitor is added by IP address.
+Enter the IP address of the device and keep **Device** on *Detect
+automatically*: the integration tries 9992 (SmartView, SmartScope) and then
+9996 (Audio Monitor). You can also pick *SmartView / SmartScope (port 9992)*
+or *Audio Monitor (port 9996)* to look for one type only. SmartView and
+SmartScope monitors that advertise themselves on the network are also
+discovered automatically; an Audio Monitor is added by IP address.
 
 ## Changing the IP address
 
 Settings → Devices & services → *Blackmagic SmartView / SmartScope / Audio
-Monitor* → three-dot menu on the entry → **Reconfigure**. The new address is
-only saved once the device answers on it. Entities, history, dashboards and
+Monitor* → three-dot menu on the entry → **Reconfigure** and enter the new address.
+The device type and port stay the same. The new address is only saved once
+the device answers on it. Entities, history, dashboards and
 automations all stay as they are.
 
 An Audio Monitor is recognised by its Unique ID. Reconfigure refuses an address
@@ -135,7 +137,8 @@ channels select picks the pair shown on the audio meters (1 & 2 up to 15 & 16).
 
 | Entity | Type |
 | --- | --- |
-| Speaker volume, Headphone volume | number (0–255, as the device uses) |
+| Speaker volume | number (0–255, as the device uses) |
+| Headphone volume (disabled by default, see below) | number (0–255) |
 | Mute | switch |
 | Input | select |
 | Meter | select |
@@ -153,6 +156,13 @@ pairs. Meter options: VU and PPM EBU/BBC with a -20 or -18 dBFS reference, and
 EBU loudness on the +9 or +18 scale.
 
 The volume knob, mute and solo on the front panel are followed live.
+
+**Headphone volume is disabled by default.** On an Audio Monitor 12G with
+protocol 1.0 and no headphones connected, a headphone volume command changed
+the *speaker* volume instead (the front-panel knob also controls whichever
+output is in use). To avoid a sudden loud speaker, enable the entity only if
+you use headphones: Settings → Devices & services → the device → *Headphone
+volume* → enable.
 
 ```yaml
 action: number.set_value

@@ -661,7 +661,7 @@ class SmartViewClient:
                 await asyncio.wait({read_task})
                 if self._closing:
                     return
-                _LOGGER.info("Lost connection to SmartView at %s", self.host)
+                _LOGGER.info("Lost connection to the device at %s", self.host)
                 await self._teardown()
                 delay = RECONNECT_MIN_DELAY
 
@@ -674,7 +674,7 @@ class SmartViewClient:
                 _LOGGER.debug("Reconnect to %s failed: %s", self.host, err)
                 delay = min(delay * 2, RECONNECT_MAX_DELAY)
             else:
-                _LOGGER.info("Reconnected to SmartView at %s", self.host)
+                _LOGGER.info("Reconnected to the device at %s", self.host)
                 delay = RECONNECT_MIN_DELAY
 
     async def _close_transport(self) -> None:

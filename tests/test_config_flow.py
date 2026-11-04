@@ -16,6 +16,7 @@ from custom_components.blackmagic_smartview.client import (
 from custom_components.blackmagic_smartview.const import (
     CONF_CACHED_MODEL,
     CONF_CACHED_NAME,
+    CONF_DEVICE,
     DOMAIN,
 )
 from homeassistant.config_entries import SOURCE_USER, SOURCE_ZEROCONF
@@ -73,12 +74,13 @@ def no_setup() -> Generator[AsyncMock]:
         yield mock_setup
 
 
-async def _start_user_flow(hass: HomeAssistant, host: str, port: int | None = PORT):
+async def _start_user_flow(hass: HomeAssistant, host: str, device: str = "smartview"):
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
-    user_input = {CONF_HOST: host} if port is None else {CONF_HOST: host, CONF_PORT: port}
-    return await hass.config_entries.flow.async_configure(result["flow_id"], user_input)
+    return await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_HOST: host, CONF_DEVICE: device}
+    )
 
 
 def _audio_state(unique_id: str | None = None):
@@ -153,7 +155,7 @@ async def test_user_flow_cannot_connect_then_recovers(
 
     probe.side_effect = None
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {CONF_HOST: HOST, CONF_PORT: PORT}
+        result["flow_id"], {CONF_HOST: HOST, CONF_DEVICE: "smartview"}
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
 
@@ -237,7 +239,7 @@ async def test_reconfigure_changes_address(
     assert result["step_id"] == "reconfigure"
 
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {CONF_HOST: OTHER_HOST, CONF_PORT: PORT}
+        result["flow_id"], {CONF_HOST: OTHER_HOST}
     )
 
     assert result["type"] is FlowResultType.ABORT
@@ -256,7 +258,7 @@ async def test_reconfigure_cannot_connect_keeps_old_address(
     probe.side_effect = SmartViewConnectionError("unreachable")
     result = await config_entry.start_reconfigure_flow(hass)
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {CONF_HOST: OTHER_HOST, CONF_PORT: PORT}
+        result["flow_id"], {CONF_HOST: OTHER_HOST}
     )
 
     assert result["type"] is FlowResultType.FORM
@@ -271,7 +273,7 @@ async def test_reconfigure_rejects_invalid_host(
     config_entry.add_to_hass(hass)
     result = await config_entry.start_reconfigure_flow(hass)
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {CONF_HOST: "http://192.0.2.20", CONF_PORT: PORT}
+        result["flow_id"], {CONF_HOST: "http://192.0.2.20"}
     )
 
     assert result["type"] is FlowResultType.FORM
@@ -293,7 +295,7 @@ async def test_reconfigure_rejects_address_of_other_monitor(
 
     result = await config_entry.start_reconfigure_flow(hass)
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {CONF_HOST: OTHER_HOST, CONF_PORT: PORT}
+        result["flow_id"], {CONF_HOST: OTHER_HOST}
     )
 
     assert result["type"] is FlowResultType.FORM
@@ -315,9 +317,7 @@ async def test_reconfigure_same_address_reuses_running_connection(
     config_entry.runtime_data = running
 
     result = await config_entry.start_reconfigure_flow(hass)
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {CONF_HOST: HOST, CONF_PORT: PORT}
-    )
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_HOST: HOST})
 
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
@@ -332,7 +332,7 @@ async def test_user_flow_detects_audio_monitor(hass: HomeAssistant, probe: Async
     """With the port left empty, 9992 is tried first and the Audio Monitor found on 9996."""
     probe.side_effect = _audio_monitor_only(_audio_state())
 
-    result = await _start_user_flow(hass, AUDIO_HOST, port=None)
+    result = await _start_user_flow(hass, AUDIO_HOST, device="detect")
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "Studio Audio Monitor"
@@ -348,7 +348,7 @@ async def test_user_flow_detection_finds_nothing(hass: HomeAssistant, probe: Asy
     """When neither port answers, the user gets the connection error."""
     probe.side_effect = SmartViewConnectionError("unreachable")
 
-    result = await _start_user_flow(hass, AUDIO_HOST, port=None)
+    result = await _start_user_flow(hass, AUDIO_HOST, device="detect")
 
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "cannot_connect"}
@@ -362,7 +362,7 @@ async def test_audio_monitor_at_new_address_updates_entry(
     audio_entry.add_to_hass(hass)
     probe.return_value = _audio_state()
 
-    result = await _start_user_flow(hass, "192.0.2.31", port=AUDIO_PORT)
+    result = await _start_user_flow(hass, "192.0.2.31", device="audio_monitor")
 
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
@@ -379,7 +379,7 @@ async def test_reconfigure_audio_monitor_to_new_address(
 
     result = await audio_entry.start_reconfigure_flow(hass)
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {CONF_HOST: "192.0.2.31", CONF_PORT: AUDIO_PORT}
+        result["flow_id"], {CONF_HOST: "192.0.2.31"}
     )
 
     assert result["type"] is FlowResultType.ABORT
@@ -397,7 +397,7 @@ async def test_reconfigure_audio_monitor_rejects_other_device(
 
     result = await audio_entry.start_reconfigure_flow(hass)
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {CONF_HOST: "192.0.2.31", CONF_PORT: AUDIO_PORT}
+        result["flow_id"], {CONF_HOST: "192.0.2.31"}
     )
 
     assert result["type"] is FlowResultType.FORM
@@ -408,9 +408,9 @@ async def test_reconfigure_audio_monitor_rejects_other_device(
 async def test_reconfigure_smartview_to_audio_monitor_is_refused(
     hass: HomeAssistant, config_entry: MockConfigEntry, probe: AsyncMock
 ) -> None:
-    """A SmartView entry cannot be pointed at an Audio Monitor."""
+    """A SmartView entry cannot be pointed at a device of another type."""
     config_entry.add_to_hass(hass)
-    probe.side_effect = _audio_monitor_only(_audio_state())
+    probe.return_value = _audio_state()
 
     result = await config_entry.start_reconfigure_flow(hass)
     result = await hass.config_entries.flow.async_configure(
@@ -420,3 +420,28 @@ async def test_reconfigure_smartview_to_audio_monitor_is_refused(
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "wrong_device"}
     assert config_entry.data[CONF_HOST] == HOST
+
+
+async def test_user_flow_device_choice_uses_one_port(hass: HomeAssistant, probe: AsyncMock) -> None:
+    """Choosing the Audio Monitor looks on port 9996 only."""
+    probe.return_value = _audio_state()
+
+    result = await _start_user_flow(hass, AUDIO_HOST, device="audio_monitor")
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    probe.assert_awaited_once_with(AUDIO_HOST, AUDIO_PORT)
+
+
+async def test_reconfigure_keeps_the_port(
+    hass: HomeAssistant, audio_entry: MockConfigEntry, probe: AsyncMock
+) -> None:
+    """Reconfigure only asks for the address; the stored port is used."""
+    audio_entry.add_to_hass(hass)
+    probe.return_value = _audio_state()
+
+    result = await audio_entry.start_reconfigure_flow(hass)
+    assert list(result["data_schema"].schema) == [CONF_HOST]
+    await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_HOST: "192.0.2.31"})
+
+    probe.assert_awaited_once_with("192.0.2.31", AUDIO_PORT)
+    assert audio_entry.data[CONF_PORT] == AUDIO_PORT

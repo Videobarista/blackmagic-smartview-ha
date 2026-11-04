@@ -4,14 +4,14 @@
     "step": {
       "user": {
         "title": "Blackmagic SmartView / SmartScope / Audio Monitor",
-        "description": "Enter the IP address of the device. Leave the port empty to detect it: 9992 for SmartView and SmartScope, 9996 for Audio Monitor. A fixed IP address (or DHCP reservation) is recommended.",
+        "description": "Enter the IP address of the device. The integration finds out by itself whether it is a SmartView / SmartScope (port 9992) or an Audio Monitor (port 9996). A fixed IP address (or DHCP reservation) is recommended.",
         "data": {
           "host": "Host",
-          "port": "Port"
+          "device": "Device"
         },
         "data_description": {
           "host": "IP address or hostname of the SmartView, SmartScope or Audio Monitor.",
-          "port": "Leave empty to detect. SmartView and SmartScope use 9992, Audio Monitor uses 9996."
+          "device": "Keep 'Detect automatically' unless you want to look for one device type only."
         }
       },
       "zeroconf_confirm": {
@@ -20,14 +20,12 @@
       },
       "reconfigure": {
         "title": "Reconfigure",
-        "description": "Change the IP address or port of the device.",
+        "description": "Change the IP address of the device. The device type and port stay the same.",
         "data": {
-          "host": "Host",
-          "port": "Port"
+          "host": "Host"
         },
         "data_description": {
-          "host": "IP address or hostname of the SmartView, SmartScope or Audio Monitor.",
-          "port": "Leave empty to detect. SmartView and SmartScope use 9992, Audio Monitor uses 9996."
+          "host": "IP address or hostname of the SmartView, SmartScope or Audio Monitor."
         }
       }
     },
@@ -264,6 +262,15 @@
     "text": {
       "device_name": {
         "name": "Device name"
+      }
+    }
+  },
+  "selector": {
+    "device": {
+      "options": {
+        "detect": "Detect automatically",
+        "smartview": "SmartView / SmartScope (port 9992)",
+        "audio_monitor": "Audio Monitor (port 9996)"
       }
     }
   }
