@@ -3,15 +3,15 @@
     "flow_title": "{name}",
     "step": {
       "user": {
-        "title": "Blackmagic SmartView / SmartScope",
-        "description": "Vul het IP-adres van de monitor in. Gebruik een vast IP-adres (of een DHCP-reservering).",
+        "title": "Blackmagic SmartView / SmartScope / Audio Monitor",
+        "description": "Vul het IP-adres van het apparaat in. Laat de poort leeg om die te detecteren: 9992 voor SmartView en SmartScope, 9996 voor Audio Monitor. Een vast IP-adres (of DHCP-reservering) wordt aangeraden.",
         "data": {
           "host": "Host",
           "port": "Poort"
         },
         "data_description": {
-          "host": "IP-adres of hostnaam van de SmartView of SmartScope.",
-          "port": "TCP-poort van het SmartView Ethernet Protocol (standaard 9992)."
+          "host": "IP-adres of hostnaam van de SmartView, SmartScope of Audio Monitor.",
+          "port": "Leeg laten om te detecteren. SmartView en SmartScope gebruiken 9992, Audio Monitor 9996."
         }
       },
       "zeroconf_confirm": {
@@ -20,26 +20,27 @@
       },
       "reconfigure": {
         "title": "Opnieuw configureren",
-        "description": "Wijzig het IP-adres of de poort van de monitor.",
+        "description": "Wijzig het IP-adres of de poort van het apparaat.",
         "data": {
           "host": "Host",
           "port": "Poort"
         },
         "data_description": {
-          "host": "IP-adres of hostnaam van de SmartView of SmartScope.",
-          "port": "TCP-poort van het SmartView Ethernet Protocol (standaard 9992)."
+          "host": "IP-adres of hostnaam van de SmartView, SmartScope of Audio Monitor.",
+          "port": "Leeg laten om te detecteren. SmartView en SmartScope gebruiken 9992, Audio Monitor 9996."
         }
       }
     },
     "error": {
-      "cannot_connect": "Kan geen verbinding maken met de monitor. Controleer het IP-adres en of poort 9992 bereikbaar is.",
-      "already_configured": "Deze monitor is al geconfigureerd.",
-      "invalid_host": "Vul alleen een IP-adres of hostnaam in, zonder http://, pad of poort."
+      "cannot_connect": "Kan geen verbinding maken. Controleer het IP-adres en of poort 9992 (SmartView) of 9996 (Audio Monitor) bereikbaar is.",
+      "already_configured": "Dit apparaat is al geconfigureerd.",
+      "invalid_host": "Vul alleen een IP-adres of hostnaam in, zonder http://, pad of poort.",
+      "wrong_device": "Dit adres hoort bij een ander apparaat. Voeg dat apparaat toe via Integratie toevoegen."
     },
     "abort": {
-      "already_configured": "Deze monitor is al geconfigureerd.",
-      "cannot_connect": "Kan geen verbinding maken met de monitor. Controleer het IP-adres en of poort 9992 bereikbaar is.",
-      "reconfigure_successful": "De monitor is opnieuw geconfigureerd."
+      "already_configured": "Dit apparaat is al geconfigureerd.",
+      "cannot_connect": "Kan geen verbinding maken. Controleer het IP-adres en of poort 9992 (SmartView) of 9996 (Audio Monitor) bereikbaar is.",
+      "reconfigure_successful": "Het apparaat is opnieuw geconfigureerd."
     }
   },
   "entity": {
@@ -68,6 +69,12 @@
       },
       "saturation": {
         "name": "Monitor {monitor} verzadiging"
+      },
+      "speaker_volume": {
+        "name": "Speakervolume"
+      },
+      "headphone_volume": {
+        "name": "Koptelefoonvolume"
       }
     },
     "select": {
@@ -131,6 +138,99 @@
           "sdi_b": "SDI B",
           "optical": "Optisch"
         }
+      },
+      "audio_input": {
+        "name": "Ingang",
+        "state": {
+          "sdi_1_2": "SDI 1-2",
+          "sdi_3_4": "SDI 3-4",
+          "sdi_5_6": "SDI 5-6",
+          "sdi_7_8": "SDI 7-8",
+          "sdi_9_10": "SDI 9-10",
+          "sdi_11_12": "SDI 11-12",
+          "sdi_13_14": "SDI 13-14",
+          "sdi_15_16": "SDI 15-16",
+          "sdi_17_18": "SDI 17-18",
+          "sdi_19_20": "SDI 19-20",
+          "sdi_21_22": "SDI 21-22",
+          "sdi_23_24": "SDI 23-24",
+          "sdi_25_26": "SDI 25-26",
+          "sdi_27_28": "SDI 27-28",
+          "sdi_29_30": "SDI 29-30",
+          "sdi_31_32": "SDI 31-32",
+          "sdi_33_34": "SDI 33-34",
+          "sdi_35_36": "SDI 35-36",
+          "sdi_37_38": "SDI 37-38",
+          "sdi_39_40": "SDI 39-40",
+          "sdi_41_42": "SDI 41-42",
+          "sdi_43_44": "SDI 43-44",
+          "sdi_45_46": "SDI 45-46",
+          "sdi_47_48": "SDI 47-48",
+          "sdi_49_50": "SDI 49-50",
+          "sdi_51_52": "SDI 51-52",
+          "sdi_53_54": "SDI 53-54",
+          "sdi_55_56": "SDI 55-56",
+          "sdi_57_58": "SDI 57-58",
+          "sdi_59_60": "SDI 59-60",
+          "sdi_61_62": "SDI 61-62",
+          "sdi_63_64": "SDI 63-64",
+          "xlr_aes_ebu": "XLR AES/EBU 1-2",
+          "xlr_analog": "XLR analoog",
+          "rca": "RCA",
+          "st2110_1_2": "ST 2110 1-2",
+          "st2110_3_4": "ST 2110 3-4",
+          "st2110_5_6": "ST 2110 5-6",
+          "st2110_7_8": "ST 2110 7-8",
+          "st2110_9_10": "ST 2110 9-10",
+          "st2110_11_12": "ST 2110 11-12",
+          "st2110_13_14": "ST 2110 13-14",
+          "st2110_15_16": "ST 2110 15-16",
+          "st2110_17_18": "ST 2110 17-18",
+          "st2110_19_20": "ST 2110 19-20",
+          "st2110_21_22": "ST 2110 21-22",
+          "st2110_23_24": "ST 2110 23-24",
+          "st2110_25_26": "ST 2110 25-26",
+          "st2110_27_28": "ST 2110 27-28",
+          "st2110_29_30": "ST 2110 29-30",
+          "st2110_31_32": "ST 2110 31-32",
+          "st2110_33_34": "ST 2110 33-34",
+          "st2110_35_36": "ST 2110 35-36",
+          "st2110_37_38": "ST 2110 37-38",
+          "st2110_39_40": "ST 2110 39-40",
+          "st2110_41_42": "ST 2110 41-42",
+          "st2110_43_44": "ST 2110 43-44",
+          "st2110_45_46": "ST 2110 45-46",
+          "st2110_47_48": "ST 2110 47-48",
+          "st2110_49_50": "ST 2110 49-50",
+          "st2110_51_52": "ST 2110 51-52",
+          "st2110_53_54": "ST 2110 53-54",
+          "st2110_55_56": "ST 2110 55-56",
+          "st2110_57_58": "ST 2110 57-58",
+          "st2110_59_60": "ST 2110 59-60",
+          "st2110_61_62": "ST 2110 61-62",
+          "st2110_63_64": "ST 2110 63-64"
+        }
+      },
+      "meter_mode": {
+        "name": "Meter",
+        "state": {
+          "vu_20": "VU (-20 dBFS ref)",
+          "vu_18": "VU (-18 dBFS ref)",
+          "ppm_ebu_20": "PPM EBU (-20 dBFS ref)",
+          "ppm_ebu_18": "PPM EBU (-18 dBFS ref)",
+          "ppm_bbc_20": "PPM BBC (-20 dBFS ref)",
+          "ppm_bbc_18": "PPM BBC (-18 dBFS ref)",
+          "loudness_ebu_9": "Loudness (EBU +9-schaal)",
+          "loudness_ebu_18": "Loudness (EBU +18-schaal)"
+        }
+      },
+      "solo": {
+        "name": "Solo",
+        "state": {
+          "off": "Uit",
+          "left": "Links",
+          "right": "Rechts"
+        }
       }
     },
     "sensor": {
@@ -145,11 +245,20 @@
       },
       "model": {
         "name": "Model"
+      },
+      "audio_delay": {
+        "name": "Audiovertraging"
+      },
+      "sdi_output_level": {
+        "name": "SDI-uitgangsniveau"
       }
     },
     "switch": {
       "tally": {
         "name": "Monitor {monitor} tally"
+      },
+      "mute": {
+        "name": "Dempen"
       }
     },
     "text": {

@@ -1,4 +1,4 @@
-"""Constants for the Blackmagic SmartView / SmartScope integration."""
+"""Constants for the Blackmagic SmartView, SmartScope and Audio Monitor integration."""
 
 from __future__ import annotations
 
@@ -7,12 +7,19 @@ from typing import Final
 DOMAIN: Final = "blackmagic_smartview"
 MANUFACTURER: Final = "Blackmagic Design"
 
-DEFAULT_PORT: Final = 9992
+# Device families. They share one text protocol, on different TCP ports.
+DEVICE_TYPE_SMARTVIEW: Final = "smartview"  # SmartView / SmartScope
+DEVICE_TYPE_AUDIO_MONITOR: Final = "audio_monitor"  # Audio Monitor 12G (G3)
+DEFAULT_PORT: Final = 9992  # SmartView / SmartScope
+DEFAULT_PORT_AUDIO_MONITOR: Final = 9996
+# Tried in this order when the user leaves the port empty
+DETECT_PORTS: Final = (DEFAULT_PORT, DEFAULT_PORT_AUDIO_MONITOR)
 
 # Stored in the config entry so the integration can start while the monitor is off
 CONF_CACHED_MODEL: Final = "model"
 CONF_CACHED_NAME: Final = "name"
 CONF_CACHED_MONITORS: Final = "monitors"
+CONF_DEVICE_TYPE: Final = "device_type"
 DEFAULT_NAME: Final = "SmartView"
 
 CONNECT_TIMEOUT: Final = 10.0
@@ -49,8 +56,31 @@ RENAME_COOLDOWN: Final = 30.0
 # Protocol block headers
 BLOCK_PREAMBLE: Final = "PROTOCOL PREAMBLE"
 BLOCK_DEVICE: Final = "SMARTVIEW DEVICE"
+BLOCK_AUDIOMONITOR_DEVICE: Final = "AUDIOMONITOR DEVICE"
 BLOCK_NETWORK: Final = "NETWORK"
 BLOCK_MONITOR_PREFIX: Final = "MONITOR "
+BLOCK_END_PRELUDE: Final = "END PRELUDE"
+BLOCK_AUDIO_METER: Final = "AUDIO METER"
+BLOCK_AUDIO_INPUT: Final = "AUDIO INPUT"
+BLOCK_AUDIO_OUTPUT: Final = "AUDIO OUTPUT"
+BLOCK_ST2110: Final = "ST2110"
+# Audio Monitor blocks are always kept, apart from the limit on unknown blocks
+AUDIO_MONITOR_BLOCKS: Final = frozenset(
+    {BLOCK_AUDIO_METER, BLOCK_AUDIO_INPUT, BLOCK_AUDIO_OUTPUT, BLOCK_ST2110}
+)
+
+# Audio Monitor fields. "Gain: Speaker Stereo 114" is stored as
+# "Gain Speaker Stereo" = "114", so both gains fit in one block.
+FIELD_METER_MODE: Final = "Meter Mode"
+FIELD_ROUTING: Final = "Routing"
+ROUTING_DESTINATION: Final = "Speaker Stereo"
+FIELD_GAIN: Final = "Gain"
+GAIN_SPEAKER: Final = "Speaker Stereo"
+GAIN_HEADPHONE: Final = "Headphone Stereo"
+FIELD_MUTE: Final = "Mute"
+FIELD_SOLO: Final = "Solo"
+FIELD_AUDIO_DELAY_MS: Final = "Audio delay in ms"
+FIELD_SDI_OUTPUT_LEVEL: Final = "SDI Output Level"
 
 # Monitor block fields
 FIELD_BRIGHTNESS: Final = "Brightness"
@@ -139,4 +169,35 @@ MONITOR_INPUTS: Final[dict[str, str]] = {
     "sdi_a": "SDI A",
     "sdi_b": "SDI B",
     "optical": "OPTICAL",
+}
+
+# Audio Monitor option key -> protocol value
+METER_MODES: Final[dict[str, str]] = {
+    "vu_20": "VU (-20dBFS Ref)",
+    "vu_18": "VU (-18dBFS Ref)",
+    "ppm_ebu_20": "PPM EBU (-20dBFS Ref)",
+    "ppm_ebu_18": "PPM EBU (-18dBFS Ref)",
+    "ppm_bbc_20": "PPM BBC (-20dBFS Ref)",
+    "ppm_bbc_18": "PPM BBC (-18dBFS Ref)",
+    "loudness_ebu_9": "Loudness (EBU +9 scale)",
+    "loudness_ebu_18": "Loudness (EBU +18 scale)",
+}
+
+SOLO_MODES: Final[dict[str, str]] = {
+    "off": "Off",
+    "left": "Left",
+    "right": "Right",
+}
+
+# The sources the device lists in its HELP reply (protocol 1.0)
+AUDIO_SOURCES: Final[dict[str, str]] = {
+    **{f"sdi_{n}_{n + 1}": f"SDI Stereo {n}-{n + 1}" for n in range(1, 64, 2)},
+    "xlr_aes_ebu": "XLR AES/EBU Stereo 1-2",
+    "xlr_analog": "XLR Analog Stereo",
+    "rca": "RCA Stereo",
+}
+# Added by protocol 1.4 (models with ST 2110), offered only when the device
+# reports an ST2110 block
+AUDIO_SOURCES_ST2110: Final[dict[str, str]] = {
+    f"st2110_{n}_{n + 1}": f"ST2110 Stereo {n}-{n + 1}" for n in range(1, 64, 2)
 }

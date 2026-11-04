@@ -1,4 +1,4 @@
-"""Switch entities: tally border on/off per monitor."""
+"""Switch entities: tally border per monitor, mute on an Audio Monitor."""
 
 from __future__ import annotations
 
@@ -9,8 +9,14 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import SmartViewConfigEntry
-from .const import BORDER_COLORS, FIELD_BORDER, TALLY_DEFAULT_COLOR
-from .entity import SmartViewMonitorEntity, monitor_ids, monitor_supports
+from .const import (
+    BLOCK_AUDIO_OUTPUT,
+    BORDER_COLORS,
+    FIELD_BORDER,
+    FIELD_MUTE,
+    TALLY_DEFAULT_COLOR,
+)
+from .entity import AudioMonitorEntity, SmartViewMonitorEntity, monitor_ids, monitor_supports
 
 PARALLEL_UPDATES = 1
 
@@ -20,8 +26,11 @@ async def async_setup_entry(
     entry: SmartViewConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up tally switches."""
+    """Set up tally switches, or the mute switch of an Audio Monitor."""
     client = entry.runtime_data
+    if client.state.is_audio_monitor:
+        async_add_entities([AudioMonitorMuteSwitch(entry)])
+        return
     async_add_entities(
         SmartViewTallySwitch(entry, monitor)
         for monitor in monitor_ids(client)
@@ -80,3 +89,29 @@ class SmartViewTallySwitch(SmartViewMonitorEntity, SwitchEntity):
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Hide the tally border."""
         await self._async_set({FIELD_BORDER: BORDER_COLORS["none"]})
+
+
+class AudioMonitorMuteSwitch(AudioMonitorEntity, SwitchEntity):
+    """Mute of an Audio Monitor's speakers; follows the front-panel button too."""
+
+    _attr_translation_key = "mute"
+
+    def __init__(self, entry: SmartViewConfigEntry) -> None:
+        """Initialise the switch."""
+        super().__init__(entry, "mute", BLOCK_AUDIO_OUTPUT, FIELD_MUTE)
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True when muted."""
+        raw = self.reported
+        if raw is None:
+            return None
+        return raw.strip().lower() == "true"
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Mute."""
+        await self._async_send({FIELD_MUTE: "true"})
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Unmute."""
+        await self._async_send({FIELD_MUTE: "false"})

@@ -1,4 +1,4 @@
-"""Base entities for the Blackmagic SmartView / SmartScope integration."""
+"""Base entities for the Blackmagic SmartView, SmartScope and Audio Monitor integration."""
 
 from __future__ import annotations
 
@@ -31,7 +31,9 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def monitor_ids(client: SmartViewClient) -> list[str]:
-    """Return the monitor letters of the device (A, B, ... at most H)."""
+    """Return the monitor letters of the device (A, B, ... at most H; none for audio)."""
+    if client.state.is_audio_monitor:
+        return []
     reported = [monitor for monitor in MONITOR_IDS if monitor in client.state.monitors]
     if reported:
         return reported
@@ -69,7 +71,7 @@ class SmartViewEntity(Entity):
             identifiers={(DOMAIN, entry.entry_id)},
             manufacturer=MANUFACTURER,
             model=model,
-            name=(state.device.get("Name") or "")[:NAME_MAX_LENGTH] or model or DEFAULT_NAME,
+            name=(state.name or "")[:NAME_MAX_LENGTH] or model or DEFAULT_NAME,
             sw_version=(f"Protocol {state.protocol_version}" if state.protocol_version else None),
         )
 
@@ -107,6 +109,25 @@ class SmartViewMonitorEntity(SmartViewEntity):
         await async_send(self, self._client.set_monitor(self._monitor, fields), fields)
 
 
+class AudioMonitorEntity(SmartViewEntity):
+    """Base class for entities of an Audio Monitor setting (one field in one block)."""
+
+    def __init__(self, entry: SmartViewConfigEntry, key: str, block: str, field: str) -> None:
+        """Initialise the entity."""
+        super().__init__(entry, key)
+        self._block = block
+        self._field = field
+
+    @property
+    def reported(self) -> str | None:
+        """Return the value the device reports for this setting."""
+        return self._client.state.block(self._block).get(self._field)
+
+    async def _async_send(self, fields: dict[str, str]) -> None:
+        """Send fields of this entity's block to the device."""
+        await async_send(self, self._client.send_block(self._block, fields), fields)
+
+
 async def async_send(entity: SmartViewEntity, command: Awaitable[None], fields: object) -> None:
     """Await a client command and turn failures into a readable error in Home Assistant."""
     try:
@@ -114,19 +135,17 @@ async def async_send(entity: SmartViewEntity, command: Awaitable[None], fields: 
     except SmartViewValueError as err:
         _LOGGER.debug("Refused to send to %s: %s", entity._client.host, err)
         raise ServiceValidationError(
-            "This value cannot be sent to the SmartView: line breaks and other "
+            "This value cannot be sent to the device: line breaks and other "
             "control characters are not allowed."
         ) from err
     except SmartViewCommandError as err:
         _LOGGER.debug("Rejected by %s: %s", entity._client.host, err)
         entity.async_write_ha_state()
         raise HomeAssistantError(
-            f"The SmartView rejected this setting: {fields}. "
+            f"The device rejected this setting: {fields}. "
             "Your model or firmware may not support it."
         ) from err
     except SmartViewError as err:
         _LOGGER.debug("Command to %s failed: %s", entity._client.host, err)
         entity.async_write_ha_state()
-        raise HomeAssistantError(
-            f"The SmartView at {entity._client.host} did not respond."
-        ) from err
+        raise HomeAssistantError(f"The device at {entity._client.host} did not respond.") from err

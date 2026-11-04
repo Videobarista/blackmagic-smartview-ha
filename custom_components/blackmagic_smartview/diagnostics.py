@@ -1,7 +1,7 @@
-"""Diagnostics for the Blackmagic SmartView / SmartScope integration.
+"""Diagnostics for the Blackmagic SmartView, SmartScope and Audio Monitor integration.
 
-Diagnostics are often attached to public GitHub issues, so addresses and the
-hostname (which contains the MAC address) are redacted. MAC addresses that
+Diagnostics are often attached to public GitHub issues, so addresses, the
+hostname and the Unique ID (both contain the MAC address) are redacted. MAC addresses that
 appear anywhere else are masked as well.
 """
 
@@ -19,6 +19,9 @@ from .client import mask_mac
 TO_REDACT = {
     CONF_HOST,
     "Hostname",
+    "Unique ID",
+    "Static subnet",
+    "Current subnet",
     "Static address",
     "Static netmask",
     "Static gateway",

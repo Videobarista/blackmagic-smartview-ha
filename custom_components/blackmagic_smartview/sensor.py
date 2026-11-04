@@ -1,4 +1,4 @@
-"""Diagnostic sensors: IP address, hostname and protocol version."""
+"""Sensors: IP address, hostname, model, protocol version, Audio Monitor delay and SDI level."""
 
 from __future__ import annotations
 
@@ -6,13 +6,23 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
-from homeassistant.const import EntityCategory
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorEntityDescription,
+)
+from homeassistant.const import EntityCategory, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import SmartViewConfigEntry
 from .client import SmartViewState
+from .const import (
+    BLOCK_AUDIO_OUTPUT,
+    BLOCK_ST2110,
+    FIELD_AUDIO_DELAY_MS,
+    FIELD_SDI_OUTPUT_LEVEL,
+)
 from .entity import SmartViewEntity
 
 PARALLEL_UPDATES = 0
@@ -22,19 +32,31 @@ PARALLEL_UPDATES = 0
 class SmartViewSensorDescription(SensorEntityDescription):
     """Describes a SmartView sensor."""
 
-    value_fn: Callable[[SmartViewState], str | None]
+    value_fn: Callable[[SmartViewState], str | int | None]
     attrs_fn: Callable[[SmartViewState], dict[str, Any]] | None = None
+    # Whether the device has this sensor (checked once, at setup)
+    supported_fn: Callable[[SmartViewState], bool] = lambda state: True
 
 
 def _network_attrs(state: SmartViewState) -> dict[str, Any]:
     net = state.network
+    # SmartView says "netmask", the Audio Monitor "subnet"
     return {
-        "netmask": net.get("Current netmask"),
+        "netmask": net.get("Current netmask") or net.get("Current subnet"),
         "gateway": net.get("Current gateway"),
         "static_address": net.get("Static address"),
-        "static_netmask": net.get("Static netmask"),
+        "static_netmask": net.get("Static netmask") or net.get("Static subnet"),
         "static_gateway": net.get("Static gateway"),
     }
+
+
+def _int(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
 
 
 SENSORS: tuple[SmartViewSensorDescription, ...] = (
@@ -49,6 +71,7 @@ SENSORS: tuple[SmartViewSensorDescription, ...] = (
         key="hostname",
         translation_key="hostname",
         entity_category=EntityCategory.DIAGNOSTIC,
+        supported_fn=lambda state: not state.is_audio_monitor,
         # Contains the MAC address; off by default so it stays out of history
         entity_registry_enabled_default=False,
         value_fn=lambda state: state.device.get("Hostname"),
@@ -65,6 +88,21 @@ SENSORS: tuple[SmartViewSensorDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda state: state.model,
     ),
+    SmartViewSensorDescription(
+        key="audio_delay",
+        translation_key="audio_delay",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.MILLISECONDS,
+        value_fn=lambda state: _int(state.block(BLOCK_AUDIO_OUTPUT).get(FIELD_AUDIO_DELAY_MS)),
+        supported_fn=lambda state: FIELD_AUDIO_DELAY_MS in state.block(BLOCK_AUDIO_OUTPUT),
+    ),
+    SmartViewSensorDescription(
+        key="sdi_output_level",
+        translation_key="sdi_output_level",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda state: state.block(BLOCK_ST2110).get(FIELD_SDI_OUTPUT_LEVEL),
+        supported_fn=lambda state: FIELD_SDI_OUTPUT_LEVEL in state.block(BLOCK_ST2110),
+    ),
 )
 
 
@@ -74,7 +112,12 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up sensors."""
-    async_add_entities(SmartViewSensor(entry, description) for description in SENSORS)
+    state = entry.runtime_data.state
+    async_add_entities(
+        SmartViewSensor(entry, description)
+        for description in SENSORS
+        if description.supported_fn(state)
+    )
 
 
 class SmartViewSensor(SmartViewEntity, SensorEntity):
@@ -90,7 +133,7 @@ class SmartViewSensor(SmartViewEntity, SensorEntity):
         self.entity_description = description
 
     @property
-    def native_value(self) -> str | None:
+    def native_value(self) -> str | int | None:
         """Return the value."""
         return self.entity_description.value_fn(self._client.state)
 

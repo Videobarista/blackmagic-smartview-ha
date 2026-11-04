@@ -1,4 +1,4 @@
-"""The Blackmagic SmartView / SmartScope integration."""
+"""The Blackmagic SmartView, SmartScope and Audio Monitor integration."""
 
 from __future__ import annotations
 
@@ -10,7 +10,14 @@ from homeassistant.core import Event, HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 
 from .client import SmartViewClient, SmartViewConnectionError
-from .const import CONF_CACHED_MODEL, CONF_CACHED_MONITORS, CONF_CACHED_NAME
+from .const import (
+    CONF_CACHED_MODEL,
+    CONF_CACHED_MONITORS,
+    CONF_CACHED_NAME,
+    CONF_DEVICE_TYPE,
+    DEVICE_TYPE_SMARTVIEW,
+    NAME_MAX_LENGTH,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -28,7 +35,7 @@ type SmartViewConfigEntry = ConfigEntry[SmartViewClient]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: SmartViewConfigEntry) -> bool:
-    """Set up a SmartView / SmartScope from a config entry.
+    """Set up a SmartView, SmartScope or Audio Monitor from a config entry.
 
     When the monitor is switched off, setup still succeeds as long as the model
     is known from an earlier connection: the entities show as unavailable, the
@@ -45,6 +52,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartViewConfigEntry) ->
             entry.data.get(CONF_CACHED_MODEL),
             entry.data.get(CONF_CACHED_NAME),
             entry.data.get(CONF_CACHED_MONITORS),
+            entry.data.get(CONF_DEVICE_TYPE, DEVICE_TYPE_SMARTVIEW),
         )
     else:
         _async_update_cache(hass, entry, client)
@@ -64,12 +72,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartViewConfigEntry) ->
 def _async_update_cache(
     hass: HomeAssistant, entry: SmartViewConfigEntry, client: SmartViewClient
 ) -> None:
-    """Remember model, name and monitor count for the next start while offline."""
+    """Remember the device's identity for the next start while it is offline."""
     state = client.state
     cache = {
         CONF_CACHED_MODEL: state.model,
-        CONF_CACHED_NAME: state.device.get("Name"),
+        CONF_CACHED_NAME: (state.name or "")[:NAME_MAX_LENGTH] or None,
         CONF_CACHED_MONITORS: state.monitor_count,
+        CONF_DEVICE_TYPE: state.device_type,
     }
     if any(entry.data.get(key) != value for key, value in cache.items()):
         hass.config_entries.async_update_entry(entry, data={**entry.data, **cache})

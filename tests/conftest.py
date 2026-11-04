@@ -1,4 +1,4 @@
-"""Shared fixtures for the Blackmagic SmartView / SmartScope tests.
+"""Shared fixtures for the Blackmagic SmartView, SmartScope and Audio Monitor tests.
 
 All addresses are documentation addresses (RFC 5737) and all identifiers are
 made up.
@@ -22,11 +22,18 @@ from custom_components.blackmagic_smartview.const import (
     CONF_CACHED_MODEL,
     CONF_CACHED_MONITORS,
     CONF_CACHED_NAME,
+    CONF_DEVICE_TYPE,
     DOMAIN,
 )
 from homeassistant.const import CONF_HOST, CONF_PORT
 
-from .mock_smartview import dump_text
+from .mock_smartview import (
+    AUDIO_MONITOR_UNIQUE_ID,
+    AudioMonitorEmulator,
+    audio_monitor_dump_text,
+    dump_text,
+    parse_block,
+)
 
 HOST = "192.0.2.10"
 PORT = 9992
@@ -37,6 +44,20 @@ ENTRY_DATA: dict[str, Any] = {
     CONF_CACHED_MODEL: "SmartScope Duo 4K",
     CONF_CACHED_NAME: "SmartScope Duo",
     CONF_CACHED_MONITORS: 2,
+    CONF_DEVICE_TYPE: "smartview",
+}
+
+AUDIO_HOST = "192.0.2.30"
+AUDIO_PORT = 9996
+AUDIO_UNIQUE_ID = AUDIO_MONITOR_UNIQUE_ID.lower()
+
+AUDIO_ENTRY_DATA: dict[str, Any] = {
+    CONF_HOST: AUDIO_HOST,
+    CONF_PORT: AUDIO_PORT,
+    CONF_CACHED_MODEL: "Blackmagic Audio Monitor 12G",
+    CONF_CACHED_NAME: "Studio Audio Monitor",
+    CONF_CACHED_MONITORS: None,
+    CONF_DEVICE_TYPE: "audio_monitor",
 }
 
 
@@ -55,12 +76,14 @@ def parsed_state(text: str | None = None) -> SmartViewState:
 class FakeClient(SmartViewClient):
     """The real client with the network replaced.
 
-    Parsing, validation, limits and the optimistic state update are the real
-    code; only connecting and the socket are faked.
+    Parsing, validation, limits and state handling are the real code; only
+    connecting and the socket are faked. With ``kind = "audio_monitor"`` the
+    fake answers like an Audio Monitor, including the blocks it sends back.
     """
 
     instances: list[FakeClient] = []
     online: bool = True
+    kind: str = "smartview"
     # What the device answers to a command: True = ACK, False = NAK, None = nothing
     answer: bool | None = True
 
@@ -69,6 +92,7 @@ class FakeClient(SmartViewClient):
         super().__init__(host, port)
         self.sent: list[str] = []
         self.closed = False
+        self.audio = AudioMonitorEmulator()
         FakeClient.instances.append(self)
 
     async def connect(self) -> None:
@@ -76,7 +100,10 @@ class FakeClient(SmartViewClient):
         if not FakeClient.online:
             raise SmartViewConnectionError(f"Cannot connect to {self.host}:{self.port}")
         self.state = SmartViewState()
-        self.feed(dump_text())
+        if FakeClient.kind == "audio_monitor":
+            self.feed(audio_monitor_dump_text(self.audio.blocks))
+        else:
+            self.feed(dump_text())
         self._connected = True
         self._notify(immediate=True)
 
@@ -92,7 +119,12 @@ class FakeClient(SmartViewClient):
     async def _send_raw(self, payload: str) -> bool | None:
         """Record what would go over the wire and answer like the device."""
         self.sent.append(payload)
-        return FakeClient.answer
+        if FakeClient.answer is not True or not self.state.is_audio_monitor:
+            return FakeClient.answer
+        acked, after = self.audio.handle(*parse_block(payload))
+        if after:
+            self.push(after)
+        return acked
 
     def push(self, text: str) -> None:
         """Let the device push blocks and pass them on at once."""
@@ -112,6 +144,7 @@ def fake_client() -> Generator[type[FakeClient]]:
     FakeClient.instances = []
     FakeClient.online = True
     FakeClient.answer = True
+    FakeClient.kind = "smartview"
     with patch("custom_components.blackmagic_smartview.SmartViewClient", FakeClient):
         yield FakeClient
 
@@ -124,4 +157,15 @@ def config_entry() -> MockConfigEntry:
         title="SmartScope Duo",
         unique_id=HOST,
         data=dict(ENTRY_DATA),
+    )
+
+
+@pytest.fixture
+def audio_entry() -> MockConfigEntry:
+    """Return an Audio Monitor config entry as the config flow creates it."""
+    return MockConfigEntry(
+        domain=DOMAIN,
+        title="Studio Audio Monitor",
+        unique_id=AUDIO_UNIQUE_ID,
+        data=dict(AUDIO_ENTRY_DATA),
     )

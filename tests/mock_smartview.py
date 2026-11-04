@@ -1,15 +1,22 @@
-"""An in-process fake of the Blackmagic SmartView Ethernet Protocol.
+"""In-process fakes of the Blackmagic SmartView and Audio Monitor protocols.
 
-It behaves like the SmartScope Duo 4K the integration was developed against:
-a state dump on connect, ACK without echo for settings, ``# Error`` for
-anything it cannot parse (such as ``PING:``), and hooks to refuse
-connections, stay silent, drop connections or send oversized lines.
-All addresses and identifiers are made up.
+``MockSmartView`` behaves like the SmartScope Duo 4K the integration was
+developed against: a state dump on connect, ACK without echo for settings,
+``# Error`` for anything it cannot parse (such as ``PING:``).
+
+With ``kind="audio_monitor"`` it behaves like the Audio Monitor 12G as probed:
+a dump ending in END PRELUDE, ACK followed by the changed fields, an empty
+block answered with the whole block, ACK plus the unchanged block for an
+invalid value, NAK for unknown blocks, and pushes for front-panel changes.
+
+Both have hooks to refuse connections, stay silent, drop connections or send
+oversized lines. All addresses and identifiers are made up.
 """
 
 from __future__ import annotations
 
 import asyncio
+import copy
 
 DUMP_BLOCKS: dict[str, dict[str, str]] = {
     "PROTOCOL PREAMBLE": {"Version": "1.3"},
@@ -64,21 +71,136 @@ SCOPE_MODES = {
 }
 
 
+AUDIO_MONITOR_UNIQUE_ID = "7C2E0D000002"
+
+AUDIO_MONITOR_BLOCKS: dict[str, dict[str, str]] = {
+    "PROTOCOL PREAMBLE": {"Version": "1.0"},
+    "AUDIOMONITOR DEVICE": {
+        "Model": "Blackmagic Audio Monitor 12G",
+        "Label": "Studio Audio Monitor",
+        "Unique ID": AUDIO_MONITOR_UNIQUE_ID,
+    },
+    "NETWORK": {
+        "Dynamic IP": "1",
+        "Static address": "192.0.2.3",
+        "Static subnet": "255.255.255.0",
+        "Static gateway": "192.0.2.1",
+        "Current address": "192.0.2.30",
+        "Current subnet": "255.255.255.0",
+        "Current gateway": "192.0.2.1",
+    },
+    "AUDIO METER": {"Meter Mode": "VU (-20dBFS Ref)"},
+    "AUDIO INPUT": {"Routing": "Speaker Stereo XLR AES/EBU Stereo 1-2"},
+    # Gains are kept per output here; the wire format is "Gain: <output> <n>"
+    "AUDIO OUTPUT": {
+        "Gain Speaker Stereo": "114",
+        "Gain Headphone Stereo": "0",
+        "Mute": "false",
+        "Solo": "Off",
+    },
+}
+
+METER_MODES = {
+    "VU (-20dBFS Ref)",
+    "VU (-18dBFS Ref)",
+    "PPM EBU (-20dBFS Ref)",
+    "PPM EBU (-18dBFS Ref)",
+    "PPM BBC (-20dBFS Ref)",
+    "PPM BBC (-18dBFS Ref)",
+    "Loudness (EBU +9 scale)",
+    "Loudness (EBU +18 scale)",
+}
+
+
+def block_text(header: str, fields: dict[str, str]) -> str:
+    """Return one block in wire format."""
+    lines = [f"{header}:"]
+    for key, value in fields.items():
+        if key.startswith("Gain "):
+            lines.append(f"Gain: {key[5:]} {value}")
+        else:
+            lines.append(f"{key}: {value}")
+    return "\n".join(lines) + "\n\n"
+
+
 def dump_text(blocks: dict[str, dict[str, str]] | None = None) -> str:
     """Return a state dump as the device sends it."""
-    out = []
-    for header, fields in (blocks or DUMP_BLOCKS).items():
-        out.append(f"{header}:\n")
-        out.extend(f"{key}: {value}\n" for key, value in fields.items())
-        out.append("\n")
-    return "".join(out)
+    return "".join(block_text(header, fields) for header, fields in (blocks or DUMP_BLOCKS).items())
+
+
+def audio_monitor_dump_text(blocks: dict[str, dict[str, str]] | None = None) -> str:
+    """Return an Audio Monitor state dump, ending in END PRELUDE."""
+    return dump_text(blocks or AUDIO_MONITOR_BLOCKS) + "END PRELUDE:\n\n"
+
+
+def parse_block(payload: str) -> tuple[str, dict[str, str]]:
+    """Split a command as sent by the client into header and fields."""
+    lines = payload.strip("\n").split("\n")
+    fields = {}
+    for line in lines[1:]:
+        key, _, value = line.partition(": ")
+        fields[key] = value
+    return lines[0].removesuffix(":"), fields
+
+
+class AudioMonitorEmulator:
+    """The Audio Monitor's command handling, without any networking."""
+
+    def __init__(self) -> None:
+        """Start from the sample state."""
+        self.blocks = copy.deepcopy(AUDIO_MONITOR_BLOCKS)
+
+    def handle(self, header: str, fields: dict[str, str]) -> tuple[bool, str]:
+        """Return (ACK?, blocks sent after the answer) for one command."""
+        if header == "PING" and not fields:
+            return True, ""
+        if header not in self.blocks or header == "PROTOCOL PREAMBLE":
+            return False, ""
+        block = self.blocks[header]
+        if not fields:
+            return True, block_text(header, block)
+        changed: dict[str, str] = {}
+        invalid = False
+        for key, value in fields.items():
+            if header == "AUDIO OUTPUT" and key == "Gain":
+                output, _, number = value.rpartition(" ")
+                if not number.isdigit() or not 0 <= int(number) <= 255:
+                    invalid = True
+                    continue
+                key, value = f"Gain {output}", number
+            elif not self._valid(header, key, value):
+                invalid = True
+                continue
+            if block.get(key) != value:
+                block[key] = value
+                changed[key] = value
+        if invalid:
+            # Seen on the real device: ACK, then the block as it really is
+            return True, block_text(header, block)
+        return True, block_text(header, changed) if changed else ""
+
+    @staticmethod
+    def _valid(header: str, key: str, value: str) -> bool:
+        if header == "AUDIO OUTPUT":
+            return (key, value) in {("Mute", "true"), ("Mute", "false")} or (
+                key == "Solo" and value in {"Off", "Left", "Right"}
+            )
+        if header == "AUDIO METER":
+            return key == "Meter Mode" and value in METER_MODES
+        if header == "AUDIO INPUT":
+            return key == "Routing" and value.startswith("Speaker Stereo ")
+        if header == "AUDIOMONITOR DEVICE":
+            return key == "Label"
+        return False
 
 
 class MockSmartView:
     """A local asyncio TCP server that behaves like a SmartScope Duo 4K."""
 
-    def __init__(self) -> None:
+    def __init__(self, kind: str = "smartview") -> None:
         """Start with a normal, well-behaved device."""
+        self.kind = kind
+        self.audio = AudioMonitorEmulator()
         self.host = "127.0.0.1"
         self.port = 0
         self.refuse_connections = 0  # close this many new connections at once
@@ -104,6 +226,12 @@ class MockSmartView:
             await self._server.wait_closed()
             self._server = None
 
+    async def push(self, text: str) -> None:
+        """Send blocks to every client, like a change made on the front panel."""
+        for writer in list(self._writers):
+            writer.write(text.encode())
+            await writer.drain()
+
     async def drop_all(self) -> None:
         """Close all open connections, like a device restart."""
         for writer in list(self._writers):
@@ -121,7 +249,8 @@ class MockSmartView:
             if self.refuse_connections > 0:
                 self.refuse_connections -= 1
                 return
-            writer.write(dump_text().encode())
+            dump = audio_monitor_dump_text(self.audio.blocks) if self.kind != "smartview" else None
+            writer.write((dump or dump_text()).encode())
             if self.oversized_line_once:
                 self.oversized_line_once = False
                 writer.write(b"MONITOR A:\nBorder: " + b"x" * 20_000 + b"\n\n")
@@ -157,7 +286,11 @@ class MockSmartView:
                 continue
             self.received.append((header, dict(fields)))
             if not self.silent:
-                writer.write(self._answer(header, fields))
+                if self.kind == "smartview":
+                    writer.write(self._answer(header, fields))
+                else:
+                    acked, after = self.audio.handle(header, fields)
+                    writer.write((b"ACK\n\n" if acked else b"NAK\n\n") + after.encode())
                 await writer.drain()
             header = None
 

@@ -31,11 +31,12 @@ async def async_setup_entry(
 
 
 class SmartViewNameText(SmartViewEntity, TextEntity):
-    """Device name. Changing it makes the device restart its network.
+    """Device name (``Name`` on a SmartView, ``Label`` on an Audio Monitor).
 
-    The connection drops for a moment and the integration reconnects by itself.
-    Only printable characters are accepted, so a name can never add lines to
-    the command, and a new rename is refused while the device is restarting.
+    Renaming a SmartView makes it restart its network: the connection drops for
+    a moment and the integration reconnects by itself, and a new rename is
+    refused while it restarts. Only printable characters are accepted, so a
+    name can never add lines to the command.
     """
 
     _attr_translation_key = "device_name"
@@ -52,7 +53,7 @@ class SmartViewNameText(SmartViewEntity, TextEntity):
     @property
     def native_value(self) -> str | None:
         """Return the device name, within the limits Home Assistant accepts."""
-        name = self._client.state.device.get("Name")
+        name = self._client.state.name
         if not name:
             return None
         return name[:NAME_MAX_LENGTH]
@@ -62,21 +63,25 @@ class SmartViewNameText(SmartViewEntity, TextEntity):
         name = value.strip()
         if not name:
             raise ServiceValidationError("The device name cannot be empty.")
+        restarts_network = not self._client.state.is_audio_monitor
         if (
-            self._last_rename is not None
+            restarts_network
+            and self._last_rename is not None
             and (remaining := RENAME_COOLDOWN - (time.monotonic() - self._last_rename)) > 0
         ):
             raise ServiceValidationError(
                 "The SmartView is still restarting its network after the last rename. "
                 f"Try again in {int(remaining) + 1} seconds."
             )
-        fields = {"Name": name}
+        fields = {self._client.state.name_field: name}
         try:
-            await async_send(self, self._client.set_device(fields), fields)
+            await async_send(self, self._client.set_name(name), fields)
         except HomeAssistantError as err:
             # A rename restarts the device's network, which can drop the
             # connection before the ACK arrives. That is expected, not a failure.
-            if isinstance(err.__cause__, SmartViewCommandError | SmartViewValueError):
+            if not restarts_network or isinstance(
+                err.__cause__, SmartViewCommandError | SmartViewValueError
+            ):
                 raise
             _LOGGER.debug("Connection dropped after rename, as expected: %s", err)
         self._last_rename = time.monotonic()

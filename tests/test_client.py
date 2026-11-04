@@ -26,7 +26,12 @@ from custom_components.blackmagic_smartview.const import (
     MAX_VALUE_LENGTH,
 )
 
-from .mock_smartview import MockSmartView, dump_text
+from .mock_smartview import (
+    AUDIO_MONITOR_UNIQUE_ID,
+    MockSmartView,
+    audio_monitor_dump_text,
+    dump_text,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -391,3 +396,135 @@ async def test_preload_limits_cached_values() -> None:
     assert smartview.state.monitor_count == 8
     assert len(smartview.state.device["Name"]) == MAX_VALUE_LENGTH
     assert not smartview.connected
+
+
+# ------------------------------------------------------------- Audio Monitor
+
+
+@pytest.fixture
+async def audio_device() -> AsyncGenerator[MockSmartView]:
+    """A running fake Audio Monitor 12G."""
+    server = MockSmartView(kind="audio_monitor")
+    await server.start()
+    yield server
+    await server.stop()
+
+
+@pytest.fixture
+async def audio_client(audio_device: MockSmartView) -> AsyncGenerator[SmartViewClient]:
+    """A connected client for the fake Audio Monitor."""
+    smartview = SmartViewClient(audio_device.host, audio_device.port)
+    await smartview.connect()
+    yield smartview
+    await smartview.close()
+
+
+async def test_audio_monitor_is_detected(audio_client: SmartViewClient) -> None:
+    """The device type, identity and settings come from the dump; END PRELUDE ends it."""
+    state = audio_client.state
+    assert audio_client.connected
+    assert state.is_audio_monitor
+    assert state.prelude_done
+    assert state.model == "Blackmagic Audio Monitor 12G"
+    assert state.name == "Studio Audio Monitor"
+    assert state.unique_id == AUDIO_MONITOR_UNIQUE_ID.lower()
+    assert state.monitors == {}
+    assert state.monitor_count is None
+    assert state.block("AUDIO OUTPUT") == {
+        "Gain Speaker Stereo": "114",
+        "Gain Headphone Stereo": "0",
+        "Mute": "false",
+        "Solo": "Off",
+    }
+    assert state.block("AUDIO INPUT")["Routing"] == "Speaker Stereo XLR AES/EBU Stereo 1-2"
+    assert "END PRELUDE" not in state.other_blocks
+
+
+async def test_audio_monitor_setting_follows_the_device(
+    audio_client: SmartViewClient, audio_device: MockSmartView
+) -> None:
+    """A change is shown as the device reports it, after asking for the block."""
+    await audio_client.send_block("AUDIO OUTPUT", {"Gain": "Speaker Stereo 120"})
+    await _wait_for(
+        lambda: audio_client.state.block("AUDIO OUTPUT")["Gain Speaker Stereo"] == "120"
+    )
+
+    assert audio_device.received == [
+        ("AUDIO OUTPUT", {"Gain": "Speaker Stereo 120"}),
+        ("AUDIO OUTPUT", {}),
+    ]
+    assert audio_client.state.block("AUDIO OUTPUT")["Gain Headphone Stereo"] == "0"
+
+
+async def test_audio_monitor_invalid_value_is_not_stored(
+    audio_client: SmartViewClient, audio_device: MockSmartView
+) -> None:
+    """The device ACKs an invalid value but keeps its state; so does the client."""
+    await audio_client.send_block("AUDIO OUTPUT", {"Solo": "Middle"})
+    await asyncio.sleep(0.1)
+    assert audio_client.state.block("AUDIO OUTPUT")["Solo"] == "Off"
+
+
+async def test_audio_monitor_front_panel_changes_are_followed(
+    audio_client: SmartViewClient, audio_device: MockSmartView
+) -> None:
+    """Volume knob and mute button changes arrive as partial blocks and are merged."""
+    await audio_device.push(
+        "AUDIO OUTPUT:\nGain: Speaker Stereo 200\n\nAUDIO OUTPUT:\nMute: true\n\n"
+    )
+    await _wait_for(lambda: audio_client.state.block("AUDIO OUTPUT")["Mute"] == "true")
+    output = audio_client.state.block("AUDIO OUTPUT")
+    assert output["Gain Speaker Stereo"] == "200"
+    assert output["Gain Headphone Stereo"] == "0"
+
+
+async def test_audio_monitor_rename_uses_label(
+    audio_client: SmartViewClient, audio_device: MockSmartView
+) -> None:
+    """The Audio Monitor's name field is Label, in the AUDIOMONITOR DEVICE block."""
+    await audio_client.set_name("Desk Monitor")
+    await _wait_for(lambda: audio_client.state.name == "Desk Monitor")
+    assert audio_device.received[0] == ("AUDIOMONITOR DEVICE", {"Label": "Desk Monitor"})
+
+
+async def test_audio_monitor_unknown_block_is_rejected(audio_client: SmartViewClient) -> None:
+    """The Audio Monitor answers NAK to a block it does not know."""
+    with pytest.raises(SmartViewCommandError):
+        await audio_client.send_block("SMARTVIEW DEVICE", {"Name": "x"})
+
+
+async def test_audio_monitor_gain_lines_are_validated(parser: SmartViewClient) -> None:
+    """Gain lines that do not end in a number are ignored."""
+    parser.feed(
+        "AUDIO OUTPUT:\nGain: Speaker Stereo 50\nGain: nonsense\nGain: Headphone Stereo x\n\n"
+    )
+    assert parser.state.block("AUDIO OUTPUT") == {"Gain Speaker Stereo": "50"}
+
+
+async def test_audio_monitor_blocks_are_kept_beyond_the_unknown_limit(
+    parser: SmartViewClient,
+) -> None:
+    """Unknown blocks cannot push out the blocks the Audio Monitor entities need."""
+    parser.feed("".join(f"BLOCK {index}:\nKey: value\n\n" for index in range(100)))
+    parser.feed(audio_monitor_dump_text())
+    assert parser.state.block("AUDIO METER") == {"Meter Mode": "VU (-20dBFS Ref)"}
+    assert parser.state.is_audio_monitor
+
+
+async def test_audio_monitor_unique_id_is_masked_in_debug_log(
+    parser: SmartViewClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The Unique ID is the MAC address; debug logs never show it."""
+    caplog.set_level(logging.DEBUG, logger=client_module.__name__)
+    parser.feed(audio_monitor_dump_text())
+    assert AUDIO_MONITOR_UNIQUE_ID not in caplog.text
+    assert "Unique ID': 'xxxxxxxxxxxx'" in caplog.text
+
+
+async def test_preload_audio_monitor() -> None:
+    """Cached identity of an Audio Monitor restores type and Label, never monitors."""
+    smartview = SmartViewClient("192.0.2.30", 9996)
+    smartview.preload("Blackmagic Audio Monitor 12G", "Studio Audio Monitor", 2, "audio_monitor")
+    assert smartview.state.is_audio_monitor
+    assert smartview.state.name == "Studio Audio Monitor"
+    assert smartview.state.monitor_count is None

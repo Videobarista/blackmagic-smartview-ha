@@ -1,4 +1,4 @@
-"""Number entities: brightness, contrast and saturation per monitor."""
+"""Number entities: monitor picture settings and Audio Monitor volumes."""
 
 from __future__ import annotations
 
@@ -10,8 +10,16 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import SmartViewConfigEntry
-from .const import FIELD_BRIGHTNESS, FIELD_CONTRAST, FIELD_SATURATION
-from .entity import SmartViewMonitorEntity, monitor_ids, monitor_supports
+from .const import (
+    BLOCK_AUDIO_OUTPUT,
+    FIELD_BRIGHTNESS,
+    FIELD_CONTRAST,
+    FIELD_GAIN,
+    FIELD_SATURATION,
+    GAIN_HEADPHONE,
+    GAIN_SPEAKER,
+)
+from .entity import AudioMonitorEntity, SmartViewMonitorEntity, monitor_ids, monitor_supports
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -51,6 +59,14 @@ async def async_setup_entry(
 ) -> None:
     """Set up number entities."""
     client = entry.runtime_data
+    if client.state.is_audio_monitor:
+        async_add_entities(
+            [
+                AudioMonitorVolume(entry, "speaker_volume", GAIN_SPEAKER),
+                AudioMonitorVolume(entry, "headphone_volume", GAIN_HEADPHONE),
+            ]
+        )
+        return
     async_add_entities(
         SmartViewNumber(entry, monitor, description)
         for monitor in monitor_ids(client)
@@ -98,3 +114,34 @@ class SmartViewNumber(SmartViewMonitorEntity, NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         """Send the new value to the monitor."""
         await self._async_set({self.entity_description.field: str(round(value))})
+
+
+class AudioMonitorVolume(AudioMonitorEntity, NumberEntity):
+    """Speaker or headphone volume of an Audio Monitor (0-255, as the device uses)."""
+
+    _attr_native_min_value = 0
+    _attr_native_max_value = 255
+    _attr_native_step = 1
+    _attr_mode = NumberMode.SLIDER
+
+    def __init__(self, entry: SmartViewConfigEntry, key: str, output: str) -> None:
+        """Initialise the volume."""
+        super().__init__(entry, key, BLOCK_AUDIO_OUTPUT, f"{FIELD_GAIN} {output}")
+        self._attr_translation_key = key
+        self._output = output
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the reported volume."""
+        raw = self.reported
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except ValueError:
+            _LOGGER.debug("Unexpected %s value %r", self._field, raw)
+            return None
+
+    async def async_set_native_value(self, value: float) -> None:
+        """Send the new volume, e.g. ``Gain: Speaker Stereo 120``."""
+        await self._async_send({FIELD_GAIN: f"{self._output} {round(value)}"})

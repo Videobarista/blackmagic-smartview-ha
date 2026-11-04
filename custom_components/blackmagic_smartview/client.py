@@ -1,6 +1,7 @@
-"""Async client for the Blackmagic SmartView Ethernet Protocol (TCP 9992).
+"""Async client for the Blackmagic SmartView and Audio Monitor Ethernet Protocols.
 
-The protocol is text based and very similar to the Videohub protocol:
+SmartView / SmartScope monitors listen on TCP 9992, the Audio Monitor 12G on
+TCP 9996. Both speak the same text protocol, very similar to the Videohub one:
 
 * On connect the device sends a full state dump as a series of blocks.
 * A block starts with a header line ending in a colon (``MONITOR A:``),
@@ -20,6 +21,19 @@ Behaviour seen on a SmartScope Duo 4K (protocol 1.3):
   reachable, so the command is reported as failed.
 * Right after a previous connection was closed, the device may close a new
   connection straight away. Connecting is therefore retried a few times.
+
+Behaviour seen on an Audio Monitor 12G (protocol 1.0):
+
+* The state dump ends with an ``END PRELUDE:`` block.
+* Changes, including those made on the front panel, are pushed as blocks with
+  only the changed fields. ``ACK`` does not always mean applied (an invalid
+  value is acknowledged and then reported unchanged), so nothing is stored
+  optimistically: after an ACK the client asks for the block again by sending
+  it empty, and the device answers with its real state.
+* ``Gain: Speaker Stereo 114`` and ``Gain: Headphone Stereo 0`` share one key;
+  they are stored as ``Gain Speaker Stereo`` and ``Gain Headphone Stereo``.
+
+The device type is detected from the device block it sends.
 
 Security model. The protocol has no authentication or encryption, so the
 client cannot verify who it talks to. What it can do:
@@ -47,7 +61,11 @@ import re
 import socket
 
 from .const import (
+    AUDIO_MONITOR_BLOCKS,
+    BLOCK_AUDIO_OUTPUT,
+    BLOCK_AUDIOMONITOR_DEVICE,
     BLOCK_DEVICE,
+    BLOCK_END_PRELUDE,
     BLOCK_MONITOR_PREFIX,
     BLOCK_NETWORK,
     BLOCK_PREAMBLE,
@@ -55,6 +73,9 @@ from .const import (
     CONNECT_ATTEMPTS,
     CONNECT_RETRY_DELAY,
     CONNECT_TIMEOUT,
+    DEVICE_TYPE_AUDIO_MONITOR,
+    DEVICE_TYPE_SMARTVIEW,
+    FIELD_GAIN,
     FIELD_IDENTIFY,
     INITIAL_DUMP_TIMEOUT,
     KEEPALIVE_COUNT,
@@ -83,6 +104,8 @@ _MAC_RE = re.compile(
     r"(?i)(?<![0-9a-f])(?:(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}|[0-9a-f]{12})(?![0-9a-f])"
 )
 _MAC_MASK = "xxxxxxxxxxxx"
+# "Speaker Stereo 114" -> ("Speaker Stereo", "114")
+_GAIN_RE = re.compile(r"^(?P<name>\S.*?)\s+(?P<value>-?\d+)$")
 
 
 def mask_mac(text: str) -> str:
@@ -120,15 +143,43 @@ class SmartViewState:
     """Last known state of the device, as reported by the device."""
 
     protocol_version: str | None = None
+    device_type: str = DEVICE_TYPE_SMARTVIEW
     device: dict[str, str] = field(default_factory=dict)
     network: dict[str, str] = field(default_factory=dict)
     monitors: dict[str, dict[str, str]] = field(default_factory=dict)
+    # Audio Monitor settings and (limited) unknown blocks, by header
     other_blocks: dict[str, dict[str, str]] = field(default_factory=dict)
+    prelude_done: bool = False
 
     @property
     def model(self) -> str | None:
         """Return the model name reported by the device."""
         return self.device.get("Model")
+
+    @property
+    def is_audio_monitor(self) -> bool:
+        """Return True for an Audio Monitor."""
+        return self.device_type == DEVICE_TYPE_AUDIO_MONITOR
+
+    @property
+    def name_field(self) -> str:
+        """Return the field that holds the user-set device name."""
+        return "Label" if self.is_audio_monitor else "Name"
+
+    @property
+    def name(self) -> str | None:
+        """Return the user-set device name."""
+        return self.device.get(self.name_field) or None
+
+    @property
+    def unique_id(self) -> str | None:
+        """Return the device's own unique ID (Audio Monitor only), lower case."""
+        value = (self.device.get("Unique ID") or "").strip().lower()
+        return value or None
+
+    def block(self, header: str) -> dict[str, str]:
+        """Return the fields of an Audio Monitor (or other) block."""
+        return self.other_blocks.get(header, {})
 
     @property
     def monitor_count(self) -> int | None:
@@ -150,6 +201,7 @@ class SmartViewState:
         """Return the state as a plain dict (used for diagnostics)."""
         return {
             "protocol_version": self.protocol_version,
+            "device_type": self.device_type,
             "device": dict(self.device),
             "network": dict(self.network),
             "monitors": {key: dict(value) for key, value in self.monitors.items()},
@@ -282,7 +334,12 @@ class SmartViewClient:
 
     async def set_device(self, fields: dict[str, str]) -> None:
         """Change settings in the device block (e.g. the name)."""
-        await self.send_block(BLOCK_DEVICE, fields)
+        header = BLOCK_AUDIOMONITOR_DEVICE if self.state.is_audio_monitor else BLOCK_DEVICE
+        await self.send_block(header, fields)
+
+    async def set_name(self, name: str) -> None:
+        """Rename the device (``Name`` on a SmartView, ``Label`` on an Audio Monitor)."""
+        await self.set_device({self.state.name_field: name})
 
     async def send_block(self, header: str, fields: dict[str, str]) -> None:
         """Send a block and wait for ACK. Raises on NAK, no answer or a bad value."""
@@ -293,7 +350,11 @@ class SmartViewClient:
             raise SmartViewConnectionError(f"No answer from {self.host} for {header}")
         if acked is False:
             raise SmartViewCommandError(f"Device rejected {header}: {fields}")
-        # The device acknowledges changes but does not echo them back, so store
+        if self.state.is_audio_monitor:
+            # Never assume: ask the device for the block, it answers with its state
+            await self._request_block(header)
+            return
+        # A SmartView acknowledges changes but does not echo them back, so store
         # the new values here. Anything the device reports later overrides this.
         target = self._block_target(header)
         if target is not None:
@@ -302,16 +363,28 @@ class SmartViewClient:
                     target[key] = value
             self._notify(immediate=True)
 
-    def preload(self, model: str | None, name: str | None, monitors: int | None) -> None:
+    def preload(
+        self,
+        model: str | None,
+        name: str | None,
+        monitors: int | None,
+        device_type: str = DEVICE_TYPE_SMARTVIEW,
+    ) -> None:
         """Fill in the last known identity, so entities can be created while offline."""
-        device: dict[str, str] = {}
+        state = SmartViewState(
+            device_type=(
+                DEVICE_TYPE_AUDIO_MONITOR
+                if device_type == DEVICE_TYPE_AUDIO_MONITOR
+                else DEVICE_TYPE_SMARTVIEW
+            )
+        )
         if model:
-            device["Model"] = model[:MAX_VALUE_LENGTH]
+            state.device["Model"] = model[:MAX_VALUE_LENGTH]
         if name:
-            device["Name"] = name[:MAX_VALUE_LENGTH]
-        if monitors:
-            device["Monitors"] = str(max(1, min(int(monitors), MAX_MONITORS)))
-        self.state = SmartViewState(device=device)
+            state.device[state.name_field] = name[:MAX_VALUE_LENGTH]
+        if monitors and not state.is_audio_monitor:
+            state.device["Monitors"] = str(max(1, min(int(monitors), MAX_MONITORS)))
+        self.state = state
 
     @classmethod
     async def probe(cls, host: str, port: int) -> SmartViewState:
@@ -378,6 +451,14 @@ class SmartViewClient:
         _LOGGER.debug("Connected to %s (%s)", self.host, self.state.model)
         self._notify(immediate=True)
 
+    async def _request_block(self, header: str) -> None:
+        """Ask an Audio Monitor for a block; it replies with ACK and the block."""
+        try:
+            await self._send_raw(f"{header}:\n\n")
+        except SmartViewConnectionError as err:
+            # The command itself succeeded; the state follows after a reconnect
+            _LOGGER.debug("Could not refresh %s from %s: %s", header, self.host, err)
+
     async def _send_raw(self, payload: str) -> bool | None:
         """Write a payload and wait for ACK/NAK. Returns True/False/None (no answer)."""
         async with self._command_lock:
@@ -405,7 +486,7 @@ class SmartViewClient:
 
     def _block_target(self, header: str) -> dict[str, str] | None:
         """Return the state dict that belongs to a block header, if it is a known one."""
-        if header == BLOCK_DEVICE:
+        if header in (BLOCK_DEVICE, BLOCK_AUDIOMONITOR_DEVICE):
             return self.state.device
         if header == BLOCK_NETWORK:
             return self.state.network
@@ -500,7 +581,14 @@ class SmartViewClient:
             if not sep or not key or len(key) > MAX_KEY_LENGTH:
                 _LOGGER.debug("Ignoring line in %s: %r", header[:MAX_KEY_LENGTH], mask_mac(line))
                 continue
-            fields[key] = value.strip()[:MAX_VALUE_LENGTH]
+            value = value.strip()[:MAX_VALUE_LENGTH]
+            if header == BLOCK_AUDIO_OUTPUT and key == FIELD_GAIN:
+                match = _GAIN_RE.match(value)
+                if match is None:
+                    _LOGGER.debug("Ignoring unexpected gain line: %r", line)
+                    continue
+                key, value = f"{FIELD_GAIN} {match['name']}"[:MAX_KEY_LENGTH], match["value"]
+            fields[key] = value
 
         _LOGGER.debug(
             "Block from %s: %s %s",
@@ -511,7 +599,11 @@ class SmartViewClient:
 
         if header == BLOCK_PREAMBLE:
             self.state.protocol_version = fields.get("Version")
+        elif header == BLOCK_END_PRELUDE:
+            self.state.prelude_done = True
         else:
+            if header == BLOCK_AUDIOMONITOR_DEVICE:
+                self.state.device_type = DEVICE_TYPE_AUDIO_MONITOR
             target = self._block_target(header)
             if target is None:
                 target = self._other_block(header)
@@ -536,15 +628,26 @@ class SmartViewClient:
         blocks = self.state.other_blocks
         if header in blocks:
             return blocks[header]
-        if len(blocks) >= MAX_OTHER_BLOCKS:
+        if header in AUDIO_MONITOR_BLOCKS:
+            blocks[header] = {}
+            return blocks[header]
+        unknown = sum(1 for name in blocks if name not in AUDIO_MONITOR_BLOCKS)
+        if unknown >= MAX_OTHER_BLOCKS:
             _LOGGER.debug("Ignoring block %r: too many unknown blocks", header)
             return None
         blocks[header] = {}
         return blocks[header]
 
     def _initial_dump_received(self) -> bool:
-        """Return True when the device block and all monitor blocks have arrived."""
-        if not self.state.device:
+        """Return True when the whole state dump has arrived.
+
+        An Audio Monitor ends its dump with END PRELUDE; a SmartView does not,
+        so for a SmartView the dump is complete with the device block and all
+        monitor blocks.
+        """
+        if self.state.prelude_done:
+            return True
+        if not self.state.device or self.state.is_audio_monitor:
             return False
         count = self.state.monitor_count or 1
         return set(MONITOR_IDS[:count]).issubset(self.state.monitors)

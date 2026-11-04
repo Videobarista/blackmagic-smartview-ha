@@ -65,7 +65,13 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up binary sensors."""
-    async_add_entities(SmartViewBinarySensor(entry, description) for description in BINARY_SENSORS)
+    state = entry.runtime_data.state
+    async_add_entities(
+        SmartViewBinarySensor(entry, description)
+        for description in BINARY_SENSORS
+        # The Audio Monitor does not report how it is mounted
+        if not (description.key == "inverted" and state.is_audio_monitor)
+    )
 
 
 class SmartViewBinarySensor(SmartViewEntity, BinarySensorEntity):

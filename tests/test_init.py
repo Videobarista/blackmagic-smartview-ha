@@ -31,7 +31,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 
-from .conftest import HOST, PORT, FakeClient
+from .conftest import AUDIO_UNIQUE_ID, HOST, PORT, FakeClient
 
 ENTITY_COUNT = 26  # 9 per monitor (A and B) plus 8 for the device
 
@@ -381,4 +381,150 @@ async def test_diagnostics_hide_addresses_and_mac(
     assert result["state"]["network"]["Static gateway"] == REDACTED
     text = json.dumps(result)
     assert "7c2e0d000001" not in text
+    assert "192.0.2." not in text
+
+
+# ------------------------------------------------------------- Audio Monitor
+
+AUDIO_ENTITY_COUNT = 12  # 2 volumes, mute, 3 selects, name, 3 sensors, 2 binary sensors
+
+
+async def test_audio_monitor_setup(
+    hass: HomeAssistant, audio_entry: MockConfigEntry, fake_client: type[FakeClient]
+) -> None:
+    """An Audio Monitor gets its own entities and none of the SmartView ones."""
+    fake_client.kind = "audio_monitor"
+    await _setup(hass, audio_entry)
+
+    registry = er.async_get(hass)
+    entities = er.async_entries_for_config_entry(registry, audio_entry.entry_id)
+    assert len(entities) == AUDIO_ENTITY_COUNT
+    assert not any("monitor_a" in entity.unique_id for entity in entities)
+
+    assert float(_state(hass, "number", audio_entry, "speaker_volume")) == 114
+    assert float(_state(hass, "number", audio_entry, "headphone_volume")) == 0
+    assert _state(hass, "switch", audio_entry, "mute") == STATE_OFF
+    assert _state(hass, "select", audio_entry, "audio_input") == "xlr_aes_ebu"
+    assert _state(hass, "select", audio_entry, "meter_mode") == "vu_20"
+    assert _state(hass, "select", audio_entry, "solo") == "off"
+    assert _state(hass, "text", audio_entry, "device_name") == "Studio Audio Monitor"
+    assert _state(hass, "binary_sensor", audio_entry, "dhcp") == STATE_ON
+
+    device = dr.async_entries_for_config_entry(dr.async_get(hass), audio_entry.entry_id)[0]
+    assert device.name == "Studio Audio Monitor"
+    assert device.model == "Blackmagic Audio Monitor 12G"
+
+
+async def test_audio_monitor_while_off(
+    hass: HomeAssistant, audio_entry: MockConfigEntry, fake_client: type[FakeClient]
+) -> None:
+    """A switched-off Audio Monitor sets up from its cached identity."""
+    fake_client.kind = "audio_monitor"
+    fake_client.online = False
+    await _setup(hass, audio_entry)
+
+    registry = er.async_get(hass)
+    entities = er.async_entries_for_config_entry(registry, audio_entry.entry_id)
+    assert len(entities) == AUDIO_ENTITY_COUNT
+    assert _state(hass, "binary_sensor", audio_entry, "connection") == STATE_OFF
+    assert _state(hass, "number", audio_entry, "speaker_volume") == STATE_UNAVAILABLE
+
+
+async def test_audio_monitor_controls(
+    hass: HomeAssistant, audio_entry: MockConfigEntry, fake_client: type[FakeClient]
+) -> None:
+    """Every control sends the protocol line, asks the block back and shows the result."""
+    fake_client.kind = "audio_monitor"
+    await _setup(hass, audio_entry)
+    client = fake_client.instances[0]
+
+    await _call(
+        hass,
+        "number",
+        "set_value",
+        _entity_id(hass, "number", audio_entry, "speaker_volume"),
+        value=120,
+    )
+    assert client.sent[-2:] == ["AUDIO OUTPUT:\nGain: Speaker Stereo 120\n\n", "AUDIO OUTPUT:\n\n"]
+    assert float(_state(hass, "number", audio_entry, "speaker_volume")) == 120
+
+    await _call(hass, "switch", "turn_on", _entity_id(hass, "switch", audio_entry, "mute"))
+    assert client.sent[-2] == "AUDIO OUTPUT:\nMute: true\n\n"
+    assert _state(hass, "switch", audio_entry, "mute") == STATE_ON
+
+    await _call(
+        hass,
+        "select",
+        "select_option",
+        _entity_id(hass, "select", audio_entry, "audio_input"),
+        option="sdi_1_2",
+    )
+    assert client.sent[-2] == "AUDIO INPUT:\nRouting: Speaker Stereo SDI Stereo 1-2\n\n"
+    assert _state(hass, "select", audio_entry, "audio_input") == "sdi_1_2"
+
+    await _call(
+        hass,
+        "select",
+        "select_option",
+        _entity_id(hass, "select", audio_entry, "meter_mode"),
+        option="loudness_ebu_18",
+    )
+    assert client.sent[-2] == "AUDIO METER:\nMeter Mode: Loudness (EBU +18 scale)\n\n"
+    assert _state(hass, "select", audio_entry, "meter_mode") == "loudness_ebu_18"
+
+    await _call(
+        hass,
+        "select",
+        "select_option",
+        _entity_id(hass, "select", audio_entry, "solo"),
+        option="left",
+    )
+    assert _state(hass, "select", audio_entry, "solo") == "left"
+
+
+async def test_audio_monitor_rename_has_no_cooldown(
+    hass: HomeAssistant, audio_entry: MockConfigEntry, fake_client: type[FakeClient]
+) -> None:
+    """Renaming an Audio Monitor does not restart its network, so no waiting."""
+    fake_client.kind = "audio_monitor"
+    await _setup(hass, audio_entry)
+    name = _entity_id(hass, "text", audio_entry, "device_name")
+
+    await _call(hass, "text", "set_value", name, value="Desk Monitor")
+    await _call(hass, "text", "set_value", name, value="Edit Suite")
+
+    assert fake_client.instances[0].sent[-2] == "AUDIOMONITOR DEVICE:\nLabel: Edit Suite\n\n"
+    assert _state(hass, "text", audio_entry, "device_name") == "Edit Suite"
+
+
+async def test_audio_monitor_front_panel_changes(
+    hass: HomeAssistant, audio_entry: MockConfigEntry, fake_client: type[FakeClient]
+) -> None:
+    """Turning the knob or pressing mute on the device shows up in Home Assistant."""
+    fake_client.kind = "audio_monitor"
+    await _setup(hass, audio_entry)
+
+    fake_client.instances[0].push(
+        "AUDIO OUTPUT:\nGain: Speaker Stereo 200\n\nAUDIO OUTPUT:\nMute: true\n\n"
+    )
+    await hass.async_block_till_done()
+
+    assert float(_state(hass, "number", audio_entry, "speaker_volume")) == 200
+    assert _state(hass, "switch", audio_entry, "mute") == STATE_ON
+
+
+async def test_audio_monitor_diagnostics_hide_unique_id(
+    hass: HomeAssistant, audio_entry: MockConfigEntry, fake_client: type[FakeClient]
+) -> None:
+    """The Unique ID is the MAC address and never appears in diagnostics."""
+    fake_client.kind = "audio_monitor"
+    await _setup(hass, audio_entry)
+
+    result = await async_get_config_entry_diagnostics(hass, audio_entry)
+
+    assert result["state"]["device_type"] == "audio_monitor"
+    assert result["state"]["device"]["Unique ID"] == REDACTED
+    assert result["state"]["network"]["Current subnet"] == REDACTED
+    text = json.dumps(result).lower()
+    assert AUDIO_UNIQUE_ID not in text
     assert "192.0.2." not in text
